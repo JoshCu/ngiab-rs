@@ -418,7 +418,7 @@ Facts relied on, checked against the code:
 ### B.2 CLI restructure (`src/cli.rs`, `src/main.rs`)
 Land this before any other change adds flags.
 
-- [ ] Shape:
+- [x] Shape: _(the `self` variant is `Cmd::SelfManage` (clippy rejects a variant named like its enum); `self update`, `models update|revert|status` and `backend list|install|record` are stubs in `src/selfupdate.rs`, `src/models.rs` and `src/installer.rs` that fail with "not implemented yet")_
   ```rust
   #[derive(Parser)]
   #[command(version, about, args_conflicts_with_subcommands = true)]
@@ -432,10 +432,10 @@ Land this before any other change adds flags.
   }
   ```
   `RunArgs` contains everything that exists today: `path`, `--auto`, `-j`, `--backend` (env `NGIAB_RS_BACKEND`), `--image` (env `NGIAB_RS_IMAGE`) and `--no-routing`. New run flags such as `--no-mouse` (D.5) also go on `RunArgs`.
-- [ ] `main()` dispatches with `match cli.cmd`. The current body of `main()` becomes `run_main(RunArgs)`.
+- [x] `main()` dispatches with `match cli.cmd`. The current body of `main()` becomes `run_main(RunArgs)`. _(`backend` also skips `detect()` for now; B.7 decides what it needs)_
   - `self` and `models` must not call `Detected::detect()`, because the docker/podman probes can take up to 10 seconds.
-- [ ] A data folder named `self`, `models`, `backend` or `run` would be parsed as a subcommand. Document `ngiab-rs ./models` and `ngiab-rs run models` in the README and in the help text.
-- [ ] **Acceptance:** `Cli::try_parse_from` tests for:
+- [x] A data folder named `self`, `models`, `backend` or `run` would be parsed as a subcommand. Document `ngiab-rs ./models` and `ngiab-rs run models` in the README and in the help text.
+- [x] **Acceptance:** `Cli::try_parse_from` tests for: _(in `src/cli.rs`, plus `debug_assert`, rejected inputs and the help-text note)_
   - `[]`
   - `["/x"]`
   - `["/x","--auto","-j","4"]`
@@ -449,12 +449,12 @@ Land this before any other change adds flags.
   The Docker `CMD ["/data"]` and `/data --auto -j 8` must keep working.
 
 ### B.3 `src/net.rs` and `ngiab-rs self update` (`src/selfupdate.rs`)
-- [ ] Dependencies:
+- [ ] Dependencies: _(partial: `ureq` 3 (features `rustls`, `json`, `gzip` confirmed), `sha2`, `flate2`, `tar`, `semver` and `zip` are added; `zip` uses `deflate-flate2` (decompression only; `deflate` would pull in the zopfli compressor). Not done: `self-replace`, deferred to the `self update` step because rustc 1.100 warns on unused dependencies)_
   - `ureq = { version = "3", default-features = false, features = ["rustls","json","gzip"] }`. Check the exact feature names when adding it.
   - `sha2`, `flate2`, `tar`, `semver`, `self-replace`.
   - `zip` (deflate only), under `[target.'cfg(windows)'.dependencies]`.
   - Do not use the `self_update` crate. It pulls in reqwest and tokio, and has its own naming conventions.
-- [ ] `net.rs`. This is the single HTTP module; `self update`, `models update` and USGS (D.8) all use it.
+- [x] `net.rs`. This is the single HTTP module; `self update`, `models update` and USGS (D.8) all use it. _(also `get()`, `get_json()`, `get_text()`, `part_path()`, `expected_sha256()`, `tag_version()`, `latest_download_url()`, `release_download_url()` and `latest_tag_via_redirect()`. `extract_tar_gz` checks every entry before `unpack` (no `..`, absolute paths, links leaving the tree or special files), because `tar` alone strips a leading `/` and silently skips `..` entries. Unit tests cover the pure parts; the `#[ignore]`d `net::tests::network_smoke` was run against cli/cli and CIROH-UA/rs_route)_
   - `agent()` sets:
     - `User-Agent: ngiab-rs/<ver>`.
     - A timeout.
@@ -1143,7 +1143,7 @@ Ratatui `Chart` limitation: the inner plot rect, after y-label width and the x-a
 
 **8a. Shared HTTP client (defined in B.3)**
 
-- [ ] Reuse `src/net.rs` from B.3 (`ureq = { version = "3", default-features = false, features = ["rustls","json","gzip"] }`; rustls, no OpenSSL). USGS-specific needs, to be folded into that one module rather than a second client:
+- [x] Reuse `src/net.rs` from B.3 (`ureq = { version = "3", default-features = false, features = ["rustls","json","gzip"] }`; rustls, no OpenSSL). USGS-specific needs, to be folded into that one module rather than a second client:
   - `pub fn agent() -> ureq::Agent`, built once (`OnceLock`), with `user_agent("ngiab-rs/{CARGO_PKG_VERSION}")`, `timeout_connect(10s)`, `timeout_global(120s)`, and `http_status_as_error(false)` so 429 and 5xx responses can be checked.
   - Downloads use B.3's `download(url, dest, progress)` (`.part` then rename). Do not add a second `get_to_file`.
 
