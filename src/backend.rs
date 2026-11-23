@@ -836,6 +836,8 @@ mod tests {
         )
     }
 
+    /// Local runs are Unix-only; host paths here are joined with `/`.
+    #[cfg(unix)]
     #[test]
     fn local_bmi_driver_env() {
         let l = launcher(BackendKind::Local);

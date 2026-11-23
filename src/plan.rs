@@ -163,6 +163,8 @@ mod tests {
         );
     }
 
+    /// Local runs are Unix-only; host paths here are joined with `/`.
+    #[cfg(unix)]
     #[test]
     fn local_route_input_and_staged_config() {
         let local = Launcher::new(
