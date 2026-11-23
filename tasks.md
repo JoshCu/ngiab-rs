@@ -387,7 +387,7 @@ Facts relied on, checked against the code:
   - `.lock`
 
 ### B.1 Filesystem layout (`src/home.rs`, first)
-- [x] `ngiab_home()`: `$NGIAB_HOME`, else `dirs::home_dir()/.ngiab`.
+- [x] `ngiab_home()`: `$NGIAB_HOME`, else `dirs::home_dir()/.ngiab`. _(returns `io::Result`; with neither set it errors instead of falling back to a relative `.ngiab`. The layout functions below return `io::Result` too, and `preprocessor_file()` returns `Option`)_
 - [x] `container_dir()`, `container_bak_dir()`, `container_new_dir()`, `container_tmp_dir()`, `install_json()`, `lock_path()`.
 - [x] `preprocessor_file()` always returns `dirs::home_dir()/.ngiab/preprocessor` and ignores `NGIAB_HOME`. Used by D.1.
 - [x] Layout:
@@ -411,7 +411,7 @@ Facts relied on, checked against the code:
   ```
   - `install_method` is one of `installer`, `cargo` or `container`.
   - `load()` treats a missing or unreadable file as default, the same way `config::State` does.
-- [x] **Acceptance:** unit tests check that `NGIAB_HOME` is honoured, that `preprocessor_file()` ignores it, and that `InstallInfo` round-trips (including the missing-file default).
+- [x] **Acceptance:** unit tests check that `NGIAB_HOME` is honoured, that `preprocessor_file()` ignores it, and that `InstallInfo` round-trips (including the missing-file default). _(`public_fns_read_the_environment` re-runs the test binary with `NGIAB_HOME` set to exercise the public functions)_
 
 ### B.2 CLI restructure (`src/cli.rs`, `src/main.rs`)
 Land this before any other change adds flags.
@@ -464,7 +464,7 @@ Land this before any other change adds flags.
   - `verify_sha256sums(sums_text, asset_name, file)` checks a file against `<hex>  <name>` lines.
   - `extract_tar_gz(archive, into)` uses `tar::Archive::unpack`, which rejects `..` and absolute paths and preserves symlinks. `extract_zip` does the same for Windows.
   - Rate-limit fallback for binaries: `https://github.com/{repo}/releases/latest/download/<asset>`. The newest tag can be read from the `Location` header of the `/releases/latest` redirect.
-- [ ] `const REPO: &str = "JoshCu/ngiab-rs"`, overridable with `NGIAB_RS_REPO` for testing forks.
+- [x] `const REPO: &str = "JoshCu/ngiab-rs"`, overridable with `NGIAB_RS_REPO` for testing forks. _(`home::REPO` and `home::repo()`; `InstallInfo::default` uses it)_
 - [ ] The asset name is `ngiab-rs-{env!("NGIAB_TARGET")}.{tar.gz|zip}` **[A]**. The binary is at the archive root.
 - [ ] `self update [--version V] [--check] [-y]`:
   1. Refuse to update in these cases:
@@ -855,14 +855,14 @@ This is needed for the native Windows binary, which uses docker/podman only. `ca
 - [x] **`backend.rs:290-292` (`selinux_enforcing`)**: gate with `cfg(target_os="linux")`.
 - [x] **`backend.rs:71-73`**: move the in-container check into a free function, `in_container()`, which B.3 also uses. Gate it with `cfg(unix)`. _(`backend::in_container()`; returns false on non-unix)_
 - [x] **`backend.rs:241-244` (local `shell_command`)**: on Windows use `%COMSPEC%`, falling back to `powershell.exe`.
-- [ ] **`backend.rs:251-258` (`mount_args`)**: _(partial: a `\\?\` prefix is stripped from the source. Not done: checking Docker Desktop and podman machine needs Windows hardware)_
+- [ ] **`backend.rs:251-258` (`mount_args`)**: _(partial: `backend::strip_verbatim` turns `\\?\C:\...` into `C:\...` and `\\?\UNC\server\share` into `\\server\share`, unit-tested on every platform. Not done: checking Docker Desktop and podman machine needs Windows hardware)_
   - The Windows source is `C:\Users\...`. Check that this works with Docker Desktop and with podman machine.
   - Never pass a `\\?\` path. Use `std::path::absolute`, which `main.rs:71` and `app.rs:229` already do.
-- [ ] **`preflight.rs:82-86`**: replaced by the string logic in `paths.rs` (C.2). _(not done: belongs to C.2 `paths.rs`)_
+- [ ] **`preflight.rs:82-86`**: replaced by the string logic in `paths.rs` (C.2). _(partial: `host_path` now treats container paths as POSIX strings (`starts_with('/')`, component-boundary prefixes), so `/dev/null` and `/ngen/ngen/data/...` no longer map to `C:\...` on Windows; tested. Not done: the `PathMap` replacement belongs to C.2)_
 - [x] **`plan.rs:30,38`**: the `/` joins are only correct for container roots. Add `debug_assert!(kind.is_container() || cfg!(unix))`. _(the assert is in `plan::command_for`, where the backend kind is known)_
 - [x] **`app.rs:600-630` (`complete_path`)**: splits on `/` only. This is superseded by the picker rework in D.2. If it is kept, also split on `MAIN_SEPARATOR` and accept `~\` at `app.rs:220`. _(kept; it now splits on `/` and `MAIN_SEPARATOR` and accepts `~\`)_
 - [x] **`pty.rs:352,369` tests**: mark `#[cfg(unix)]`. Add a Windows smoke test (`cmd /C echo hello`); portable-pty uses ConPTY there. _(the Windows test compiles but has not been run on Windows)_
-- [x] **Platform constant**: _(`backend::LOCAL_SUPPORTED`. Exception: local probes still run when `in_container()`, because inside our own image (arm64 included) the tools and `/dmod` are native)_
+- [x] **Platform constant**: _(`backend::LOCAL_SUPPORTED`. Exception: local probes also run inside our own image (`in_container()` and `/dmod/shared_libs` exists), because there the tools and `/dmod` are native, arm64 included. A generic container such as toolbox on an arm64 host does not qualify. Gating is in `backend::probe_local`, unit-tested)_
   ```rust
   pub const LOCAL_SUPPORTED: bool = cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"));
   ```
