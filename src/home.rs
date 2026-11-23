@@ -21,65 +21,90 @@
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Overrides the ngiab-rs part of `~/.ngiab` (bundle, install.json, lock).
 pub const NGIAB_HOME_ENV: &str = "NGIAB_HOME";
 
-/// `$NGIAB_HOME`, else `~/.ngiab`.
-pub fn ngiab_home() -> PathBuf {
+/// GitHub `owner/name` that releases, installers and model bundles come from.
+pub const REPO: &str = "JoshCu/ngiab-rs";
+
+/// Overrides [`REPO`] (for testing forks).
+pub const REPO_ENV: &str = "NGIAB_RS_REPO";
+
+/// `$NGIAB_RS_REPO`, else [`REPO`].
+pub fn repo() -> String {
+    repo_from(std::env::var(REPO_ENV).ok())
+}
+
+fn repo_from(env: Option<String>) -> String {
+    env.filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_else(|| REPO.to_string())
+}
+
+/// `$NGIAB_HOME`, else `~/.ngiab`. Fails when neither is available rather than
+/// falling back to a relative path (which would write into the current folder).
+pub fn ngiab_home() -> io::Result<PathBuf> {
     ngiab_home_from(std::env::var_os(NGIAB_HOME_ENV), dirs::home_dir())
 }
 
-fn ngiab_home_from(env: Option<OsString>, home: Option<PathBuf>) -> PathBuf {
+fn ngiab_home_from(env: Option<OsString>, home: Option<PathBuf>) -> io::Result<PathBuf> {
     match env.filter(|v| !v.is_empty()) {
-        Some(v) => PathBuf::from(v),
-        None => default_ngiab_dir(home),
+        Some(v) => Ok(PathBuf::from(v)),
+        None => default_ngiab_dir(home).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no home directory found; set {NGIAB_HOME_ENV}"),
+            )
+        }),
     }
 }
 
-/// `~/.ngiab` (falls back to a relative `.ngiab` if there is no home directory).
-fn default_ngiab_dir(home: Option<PathBuf>) -> PathBuf {
-    home.unwrap_or_default().join(".ngiab")
+/// `~/.ngiab`, if there is a home directory.
+fn default_ngiab_dir(home: Option<PathBuf>) -> Option<PathBuf> {
+    home.map(|h| h.join(".ngiab"))
 }
 
 /// Local-backend model bundle. The container path `/X` maps to `container_dir()/X`.
-pub fn container_dir() -> PathBuf {
-    ngiab_home().join("container")
+pub fn container_dir() -> io::Result<PathBuf> {
+    Ok(ngiab_home()?.join("container"))
 }
 
 /// Previous bundle, kept for `models revert`.
-pub fn container_bak_dir() -> PathBuf {
-    ngiab_home().join("container.bak")
+pub fn container_bak_dir() -> io::Result<PathBuf> {
+    Ok(ngiab_home()?.join("container.bak"))
 }
 
 /// Extraction target during `models update`; swapped into place when complete.
-pub fn container_new_dir() -> PathBuf {
-    ngiab_home().join("container.new")
+pub fn container_new_dir() -> io::Result<PathBuf> {
+    Ok(ngiab_home()?.join("container.new"))
 }
 
 /// Intermediate name used by the three-way swap in `models revert`.
-pub fn container_tmp_dir() -> PathBuf {
-    ngiab_home().join("container.tmp")
+pub fn container_tmp_dir() -> io::Result<PathBuf> {
+    Ok(ngiab_home()?.join("container.tmp"))
 }
 
-pub fn install_json() -> PathBuf {
-    ngiab_home().join("install.json")
+pub fn install_json() -> io::Result<PathBuf> {
+    Ok(ngiab_home()?.join("install.json"))
 }
 
 /// Exclusive lock held by `models update|revert`.
-pub fn lock_path() -> PathBuf {
-    ngiab_home().join(".lock")
+pub fn lock_path() -> io::Result<PathBuf> {
+    Ok(ngiab_home()?.join(".lock"))
 }
 
 /// NGIAB_data_preprocess's own settings file. Always `~/.ngiab/preprocessor`:
-/// it belongs to the preprocessor, so `NGIAB_HOME` does not move it.
-pub fn preprocessor_file() -> PathBuf {
+/// it belongs to the preprocessor, so `NGIAB_HOME` does not move it. `None` without
+/// a home directory.
+pub fn preprocessor_file() -> Option<PathBuf> {
     preprocessor_file_from(dirs::home_dir())
 }
 
-fn preprocessor_file_from(home: Option<PathBuf>) -> PathBuf {
-    default_ngiab_dir(home).join("preprocessor")
+fn preprocessor_file_from(home: Option<PathBuf>) -> Option<PathBuf> {
+    default_ngiab_dir(home).map(|d| d.join("preprocessor"))
 }
 
 /// `install.json`: how and where ngiab-rs was installed.
@@ -108,16 +133,18 @@ impl Default for InstallInfo {
             bin_path: None,
             install_method: String::new(),
             backends: vec![],
-            repo: "JoshCu/ngiab-rs".into(),
+            repo: repo(),
             installed_at: String::new(),
         }
     }
 }
 
 impl InstallInfo {
-    /// Load `install_json()`; a missing or unreadable file gives the default.
+    /// Load `install_json()`; a missing or unreadable file (or no home) gives the default.
     pub fn load() -> Self {
-        Self::load_from(&install_json())
+        install_json()
+            .map(|p| Self::load_from(&p))
+            .unwrap_or_default()
     }
 
     pub fn load_from(path: &Path) -> Self {
@@ -127,16 +154,16 @@ impl InstallInfo {
             .unwrap_or_default()
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
-        self.save_to(&install_json())
+    pub fn save(&self) -> io::Result<()> {
+        self.save_to(&install_json()?)
     }
 
     /// Write atomically (temp file + rename), creating the parent directory.
-    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+    pub fn save_to(&self, path: &Path) -> io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         let tmp = path.with_extension("json.part");
         std::fs::write(&tmp, json + "\n")?;
         std::fs::rename(&tmp, path)
@@ -151,18 +178,78 @@ mod tests {
     fn ngiab_home_honours_env() {
         let home = Some(PathBuf::from("/home/u"));
         assert_eq!(
-            ngiab_home_from(Some("/tmp/nh".into()), home.clone()),
+            ngiab_home_from(Some("/tmp/nh".into()), home.clone()).unwrap(),
             PathBuf::from("/tmp/nh")
         );
         assert_eq!(
-            ngiab_home_from(None, home.clone()),
+            ngiab_home_from(None, home.clone()).unwrap(),
             PathBuf::from("/home/u/.ngiab")
         );
         // An empty value is treated as unset.
         assert_eq!(
-            ngiab_home_from(Some("".into()), home),
+            ngiab_home_from(Some("".into()), home).unwrap(),
             PathBuf::from("/home/u/.ngiab")
         );
+        // $NGIAB_HOME alone is enough without a home directory...
+        assert_eq!(
+            ngiab_home_from(Some("/tmp/nh".into()), None).unwrap(),
+            PathBuf::from("/tmp/nh")
+        );
+        // ...but with neither there is no silent relative `.ngiab`.
+        assert!(ngiab_home_from(None, None).is_err());
+        // The public function reads exactly this variable.
+        assert_eq!(NGIAB_HOME_ENV, "NGIAB_HOME");
+    }
+
+    /// Runs the real `ngiab_home()` / `preprocessor_file()` in a child process (this
+    /// test binary re-invoked) with `NGIAB_HOME` set, so the parent's environment is
+    /// never mutated.
+    #[test]
+    fn public_fns_read_the_environment() {
+        if let Some(out) = std::env::var_os("NGIAB_RS_HOME_TEST_CHILD") {
+            let line = format!(
+                "{}\n{}\n",
+                ngiab_home().unwrap().display(),
+                preprocessor_file()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            );
+            std::fs::write(out, line).unwrap();
+            return;
+        }
+        let out = std::env::temp_dir().join(format!("ngiab-rs-home-child-{}", std::process::id()));
+        let nh = std::env::temp_dir().join("ngiab-rs-home-env-test");
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "home::tests::public_fns_read_the_environment",
+                "--test-threads=1",
+            ])
+            .env("NGIAB_RS_HOME_TEST_CHILD", &out)
+            .env(NGIAB_HOME_ENV, &nh)
+            .output()
+            .unwrap();
+        assert!(child.status.success(), "{child:?}");
+        let got = std::fs::read_to_string(&out).unwrap();
+        let _ = std::fs::remove_file(&out);
+        let mut lines = got.lines();
+        assert_eq!(lines.next().unwrap(), nh.display().to_string());
+        let pre = preprocessor_file()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        assert_eq!(lines.next().unwrap_or_default(), pre);
+        if !pre.is_empty() {
+            assert!(!pre.starts_with(&nh.display().to_string()));
+        }
+    }
+
+    #[test]
+    fn repo_override() {
+        assert_eq!(REPO, "JoshCu/ngiab-rs");
+        assert_eq!(REPO_ENV, "NGIAB_RS_REPO");
+        assert_eq!(repo_from(None), REPO);
+        assert_eq!(repo_from(Some(" ".into())), REPO);
+        assert_eq!(repo_from(Some("me/fork".into())), "me/fork");
     }
 
     #[test]
@@ -170,19 +257,14 @@ mod tests {
         let home = Some(PathBuf::from("/home/u"));
         assert_eq!(
             preprocessor_file_from(home),
-            PathBuf::from("/home/u/.ngiab/preprocessor")
+            Some(PathBuf::from("/home/u/.ngiab/preprocessor"))
         );
-        // The public function never consults $NGIAB_HOME (no env mutation needed
-        // to show it: it is built from the home dir alone).
-        assert_eq!(
-            preprocessor_file(),
-            preprocessor_file_from(dirs::home_dir())
-        );
+        assert_eq!(preprocessor_file_from(None), None);
     }
 
     #[test]
     fn layout_is_under_ngiab_home() {
-        let h = ngiab_home();
+        let Ok(h) = ngiab_home() else { return };
         for (p, name) in [
             (container_dir(), "container"),
             (container_bak_dir(), "container.bak"),
@@ -191,7 +273,7 @@ mod tests {
             (install_json(), "install.json"),
             (lock_path(), ".lock"),
         ] {
-            assert_eq!(p, h.join(name));
+            assert_eq!(p.unwrap(), h.join(name));
         }
     }
 
