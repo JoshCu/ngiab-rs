@@ -14,7 +14,8 @@ ARG BMI_DRIVER_VERSION=0.2.1
 ARG RS_ROUTE_VERSION=0.3.1
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}" CMAKE_POLICY_VERSION_MINIMUM=3.5
-RUN dnf install -y gcc gcc-c++ make cmake && dnf clean all
+# gfortran: rs_route's build.rs compiles the t-route Muskingum-Cunge Fortran kernel.
+RUN dnf install -y gcc gcc-c++ gcc-gfortran make cmake && dnf clean all
 WORKDIR /build
 RUN cargo install bmi-driver --version "${BMI_DRIVER_VERSION}" --locked --features static --root /build/out
 RUN cargo install rs_route --version "${RS_ROUTE_VERSION}" --locked --features static --root /build/out
@@ -22,8 +23,9 @@ COPY . /build/ngiab-rs
 RUN cargo install --path /build/ngiab-rs --locked --features static --root /build/out
 
 # ---- runtime (no Python: Python BMI models are unsupported) ----
-FROM rockylinux:9.1 AS final
-RUN dnf install -y libgfortran attr && dnf clean all
+# -minimal (microdnf) rather than the full image, which ships python3 for dnf.
+FROM rockylinux:9.1-minimal AS final
+RUN microdnf install -y libgfortran attr && microdnf clean all
 COPY --from=ngiab /dmod/datasets /dmod/datasets
 COPY --from=ngiab /dmod/shared_libs /dmod/shared_libs
 # Only the Rust LSTM weights; the rest of extern/lstm is the Python package.
