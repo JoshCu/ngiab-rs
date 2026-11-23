@@ -16,7 +16,8 @@
 # LSTM config.yml files get relative run_dir/train_dir/img_log_dir values.
 #
 # The script exits non-zero if any gate fails:
-#   - a Python artefact (.venv, __pycache__, site-packages, *.py, *.pyc) remains
+#   - a Python artefact remains (.venv, __pycache__, site-packages, *.py, *.pyc,
+#     and also *.pyd/*.pyi/*.whl, package metadata or a python shebang)
 #   - a text file still contains /ngen/ or /dmod/
 #   - a symlink dangles
 #   - the tarball is larger than 1 GiB
@@ -104,7 +105,12 @@ digests=$("$ENGINE" image inspect --format '{{range .RepoDigests}}{{println .}}{
 digest_ref=$(printf '%s\n' "$digests" | grep -E "^(docker\.io/)?(library/)?${repo#docker.io/}@" | head -n 1 || true)
 [ -n "$digest_ref" ] || digest_ref=$(printf '%s\n' "$digests" | grep @ | head -n 1 || true)
 SOURCE_DIGEST=${digest_ref#*@}
-[ -n "$SOURCE_DIGEST" ] || log "warning: no RepoDigest for $IMAGE (locally built image?)"
+if [ -z "$SOURCE_DIGEST" ]; then
+    # A pulled image always has a RepoDigest; without one the manifest could not
+    # say which image the bundle came from.
+    [ "$do_pull" = 1 ] && die "no RepoDigest for $IMAGE after pulling it"
+    log "warning: no RepoDigest for $IMAGE (locally built image?)"
+fi
 
 # ---------------------------------------------------------------- extract
 log "extracting from $IMAGE"
@@ -179,8 +185,22 @@ gate() { # gate <name> <offending lines...>
         report "- pass: $name"
     fi
 }
-gate "no Python artefacts" "$(find "$STAGE" \( -name .venv -o -name __pycache__ -o -name site-packages \
-    -o -name '*.py' -o -name '*.pyc' \) -print)"
+# Wider than the prune above, so it can catch Python content the prune missed:
+# compiled modules, stubs, wheels, package metadata and python scripts without
+# a .py suffix.
+py_shebang() {
+    find "$STAGE" -type f -size -1048576c | while IFS= read -r f; do
+        head -c 128 "$f" 2>/dev/null | head -n 1 | grep -qE '^#!.*python' && printf '%s\n' "$f"
+    done
+    return 0
+}
+gate "no Python artefacts" "$(
+    find "$STAGE" \( -name .venv -o -name __pycache__ -o -name site-packages -o -name dist-packages \
+        -o -name '*.py' -o -name '*.pyc' -o -name '*.pyo' -o -name '*.pyd' -o -name '*.pyi' \
+        -o -name '*.whl' -o -name '*.egg' -o -name '*.egg-info' -o -name '*.dist-info' \
+        -o -name pyproject.toml -o -name setup.cfg -o -name 'python[0-9]*' \) -print
+    py_shebang
+)"
 gate "no /ngen/ or /dmod/ in text files" "$(grep -rIlE '/ngen/|/dmod/' "$STAGE" || true)"
 gate "no dangling symlinks" "$(find "$STAGE" -xtype l -print)"
 
@@ -266,9 +286,6 @@ TARBALL="$OUT/$NAME.tar.gz"
 rm -f "$TARBALL" "$OUT/$NAME.json" "$OUT/SHA256SUMS"
 tar --sort=name --owner=0 --group=0 --numeric-owner -C "$STAGE" -czf "$TARBALL" .
 size=$(wc -c <"$TARBALL" | tr -d ' ')
-tar_sha=$(sha256sum "$TARBALL" | awk '{print $1}')
-jq --arg sha "$tar_sha" '. + {tar_sha256: $sha}' "$STAGE/manifest.json" >"$OUT/$NAME.json"
-(cd "$OUT" && sha256sum "$NAME.tar.gz" "$NAME.json" >SHA256SUMS)
 
 stray=$(tar tzf "$TARBALL" | grep -vE '^\./($|manifest\.json$|dmod/$|dmod/(datasets|shared_libs)(/|$)|ngen/$|ngen/ngen/$|ngen/ngen/extern/$|ngen/ngen/extern/lstm/$|ngen/ngen/extern/lstm/trained_neuralhydrology_models(/|$))' || true)
 if [ -n "$stray" ]; then
@@ -285,6 +302,12 @@ if [ "$size" -gt "$MAX_BYTES" ]; then
     rm -f "$TARBALL"
     die "tarball is $size bytes, over the 1 GiB limit"
 fi
+
+# Only now that every gate has passed: write the sibling manifest and checksums,
+# so a failed run never leaves files that point at a deleted tarball.
+tar_sha=$(sha256sum "$TARBALL" | awk '{print $1}')
+jq --arg sha "$tar_sha" '. + {tar_sha256: $sha}' "$STAGE/manifest.json" >"$OUT/$NAME.json"
+(cd "$OUT" && sha256sum "$NAME.tar.gz" "$NAME.json" >SHA256SUMS)
 
 report ""
 report "## Bundle"

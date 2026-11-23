@@ -109,7 +109,7 @@ jobs:
           sha256sum -c SHA256SUMS
           tar=ngiab-models-x86_64-unknown-linux-gnu.tar.gz
           json=ngiab-models-x86_64-unknown-linux-gnu.json
-          jq -e --arg sha "$(sha256sum "$tar" | cut -d' ' -f1)" '.schema == 1 and .tar_sha256 == $sha and (.min_glibc | length > 0)' "$json"
+          jq -e --arg sha "$(sha256sum "$tar" | cut -d' ' -f1)" '.schema == 1 and .tar_sha256 == $sha and (.min_glibc | length > 0) and (.source_digest | startswith("sha256:"))' "$json"
           tar xzf "$tar" -O ./manifest.json | jq -e '.libs | length > 0'
           ls -l
 
