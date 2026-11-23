@@ -153,6 +153,8 @@ These are minor and don't block anything. Defaults are given in brackets.
 - **NWM retrospective overlay** from `eval/nwm_cache`: in scope? [no] (D)
 - ~~**Initial `NGIAB_BASE` tag**~~ Resolved in P1: pinned `awiciroh/ngiab:v2.1.0`, the highest `vX.Y.Z` tag on Docker Hub on 2026-11-23 (pushed 2026-10-28, amd64+arm64, same push as `:latest`).
 - **Repo slug** once the remote exists.
+- **Docker `X.Y` tag on prereleases.** [not moved: `release.yml` tags a prerelease only `X.Y.Z`, so `v0.2.0-rc1` never shadows a stable `0.2`; for `0.2.0-rc.1` `${VERSION%.*}` would not even give `0.2`] A.4 literally says `X.Y` always; confirm the stricter behaviour. (A.4)
+- **Test command on the build legs.** [`cargo test --release --locked --features static --target T`] The Decisions say `cargo test --locked`. Without `static` the netcdf crate needs a system libnetcdf that the runners don't have (even `cargo check` runs its build script), so no leg tests the default feature set; that is left to developers or an optional `ci.yml` (A.8). Confirm. (A.3)
 
 ---
 
@@ -222,13 +224,13 @@ Each leg:
 - [x] `actions/checkout@v4`, then `dtolnay/rust-toolchain@stable` with `targets: ${{ matrix.target }}`, then `Swatinem/rust-cache@v2` with `key: ${{ matrix.target }}`.
   - The cache matters: static HDF5, netCDF-C and SQLite (`rusqlite` `bundled`) build from source every time. Expect 20–40 minutes for the first run.
 - [x] Set `env: CMAKE_POLICY_VERSION_MINIMUM: "3.5"`. It's harmless, and it guards against CMake 4.x rejecting the old `cmake_minimum_required` calls in the bundled C sources. _(manylinux_2_28 ships CMake 4.x, so this is needed)_
-- [x] Run `cargo test --locked --target ${{ matrix.target }}`. The tests in `pty.rs` use `sh` and `/`, so gate them with `#[cfg(unix)]` (C.6). _(runs as `cargo test --release --locked --features static --target …`: without `static` the netcdf crate needs a system libnetcdf, which the runners lack; release+static also shares compiled deps with the build step)_
+- [x] Run `cargo test --locked --target ${{ matrix.target }}`. The tests in `pty.rs` use `sh` and `/`, so gate them with `#[cfg(unix)]` (C.6). _(runs as `cargo test --release --locked --features static --target …`: without `static` the netcdf crate needs a system libnetcdf, which the runners lack; release+static also shares compiled deps with the build step. Deviation from the Decisions row, awaiting confirmation: see Remaining open questions)_
 - [x] Run `cargo build --release --locked --features static --target ${{ matrix.target }}`.
   - The `static` feature means `netcdf-src` + `hdf5-metno-src`, both built through the `cmake` crate, so every runner needs CMake and a C compiler. GitHub images have both.
   - No curl, libxml2 or m4 is needed (DAP is off).
   - On MSVC, leave the CRT at the default `/MD`.
   - zlib comes from `libz-sys`, built statically.
-- [x] **Link check.** Fail if anything unexpected is dynamically linked: _(scripts/check-linkage.sh. Linux also allows `libutil.so.1`, which portable-pty's `openpty` needs on glibc < 2.34; macOS also allows `/usr/lib/libobjc*` and `libc++abi`, which objc2/AppKit pull in)_
+- [x] **Link check.** Fail if anything unexpected is dynamically linked: _(scripts/check-linkage.sh. Linux also allows `libutil.so.1`, which portable-pty's `openpty` needs on glibc < 2.34; macOS also allows `/usr/lib/libobjc*` and `libc++abi`, which objc2/AppKit pull in. Only the Linux allowlist has been exercised (in manylinux_2_28 locally); the macOS and Windows allowlists are unverified until a CI dry run)_
   - **Linux:** `ldd` may show only `libc`, `libm`, `libpthread`, `libdl`, `librt`, `ld-linux` and `libgcc_s`. In particular, no GTK, because `rfd` must use the xdg-portal backend (D.3).
   - **macOS:** `otool -L` may show only `/usr/lib/libSystem*`, `libc++`, `libiconv` and `/System/Library/Frameworks/*`. AppKit is expected because of `rfd`.
   - **Windows:** use `objdump -p` from Git Bash, or `dumpbin` after `ilammy/msvc-dev-cmd@v1`; `dumpbin` is not on PATH by default. Only system DLLs and VC runtime DLLs are allowed. No `hdf5`, `netcdf` or `zlib1` DLLs.
@@ -254,7 +256,7 @@ Each leg:
      - `outputs: type=image,name=docker.io/joshcu/ngiab-rs,push-by-digest=true,name-canonical=true,push=${{ !dry_run }}`
      - `cache-from` and `cache-to: type=gha,mode=max,scope=<platform>`. If the 10 GB cache limit becomes a problem, switch to `type=registry,ref=joshcu/ngiab-rs:buildcache-<arch>`.
   4. Upload the digest as an artifact.
-- [x] `docker-merge` job (skipped on dry runs): _(`X.Y` is, like `latest`, only moved for stable releases so an rc never shadows a stable X.Y)_
+- [x] `docker-merge` job (skipped on dry runs): _(deviation, awaiting confirmation (see Remaining open questions): `X.Y` is, like `latest`, only moved for stable releases so an rc never shadows a stable X.Y)_
   - Run `docker buildx imagetools create` with tags `X.Y.Z` and `X.Y`, plus `latest` only when `prerelease == false`.
   - Run `imagetools inspect` to confirm both platforms are present.
   - Note: Docker tags have **no `v` prefix**. They must match `CARGO_PKG_VERSION`, because that is what the binary uses by default.
@@ -263,13 +265,13 @@ Each leg:
 
 ### A.5 `release.yml`: publish job (`release`)
 - [x] `needs: [check-version, build, docker-merge]`. The image must exist before a binary that defaults to it is published. _(also needs `docker`; on dry runs the job still assembles `dist/` + `SHA256SUMS` and uploads it as the `release-dist` artifact, but publishes nothing)_
-- [x] Put everything in `dist/`: download all `bin-*` artifacts and copy `install.sh` and `install.ps1` from the repo.
+- [x] Put everything in `dist/`: download all `bin-*` artifacts and copy `install.sh` and `install.ps1` from the repo. _(the step is written, but `install.sh`/`install.ps1` are not in the repo yet (B.5/B.6): dry runs only warn, and a real `v*` tag run fails until they, or stubs, exist)_
 - [x] Generate `SHA256SUMS` by running `cd dist && sha256sum * > SHA256SUMS`. This single file covers every asset, including both installers. There are no per-file sidecars.
 - [x] Create the release with `softprops/action-gh-release@v2`: _(draft via softprops, then published with `gh release edit --draft=false`)_
   - Create it as a draft, upload all assets, then publish.
   - Set `prerelease` from `check-version`, and `make_latest: true` for stable releases.
   - Use `generate_release_notes: true`.
-- [x] Final assets: _(the job fails if any is missing)_
+- [x] Final assets: _(the job fails if any is missing, so a real tag run is blocked on B.5/B.6 adding `install.sh` and `install.ps1`)_
   - `ngiab-rs-x86_64-unknown-linux-gnu.tar.gz`
   - `ngiab-rs-aarch64-apple-darwin.tar.gz`
   - `ngiab-rs-x86_64-apple-darwin.tar.gz`
@@ -298,7 +300,7 @@ The bundle is only used by the local backend, which is Linux x86_64 only. The us
 - [x] **Relocate** so the bundle works from any directory: _(values become `../trained_neuralhydrology_models/<run>[/train_data|/img_log]`: the shipped librust_lstm_1025.so replaces `..` with `<runs>/..`, current rust-lstm joins against `<runs>`; both resolve to the run dir. Verified: a 6-member LSTM ensemble and CFE+Noah-OWP+sloth ran with bmi-driver 0.2.1 against the extracted, read-only bundle)_
   - Run `patchelf --set-rpath '$ORIGIN'` on every regular `.so` file in `dmod/shared_libs`, skipping symlinks. This removes the build RPATHs. Libraries then resolve each other without `LD_LIBRARY_PATH`, which is still set as a belt-and-braces measure (C.4).
   - In `trained_neuralhydrology_models/*/config.yml`, rewrite `run_dir:`, `train_dir:` and `img_log_dir:` to relative values. rust-lstm resolves a relative `run_dir` against the parent of the run dirs; check that the shipped `librust_lstm_*.so` does this.
-- [x] **Gates.** Each of these fails the job: _(plus a tarball-layout gate; verified to fail on an image with a `/dmod/` text file and a dangling symlink)_
+- [x] **Gates.** Each of these fails the job: _(plus a tarball-layout gate; verified to fail on an image with a `/dmod/` text file and a dangling symlink. The Python gate is wider than the prune (also `*.pyd`, `*.pyi`, `*.whl`, `*.dist-info`, `pyproject.toml`, python shebangs, …) so it can catch what the prune missed. The tarball gates run before the sibling `.json` and `SHA256SUMS` are written. A pulled image without a RepoDigest fails, and models.yml checks `source_digest` starts with `sha256:`)_
   - Any `.venv`, `__pycache__`, `site-packages`, `*.py` or `*.pyc` remains.
   - `grep -rIl '/ngen/\|/dmod/' stage` finds a text file.
   - `find stage -xtype l` finds a dangling symlink.
