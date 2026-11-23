@@ -7,6 +7,7 @@ mod eval;
 mod home;
 mod installer;
 mod models;
+mod net;
 mod plan;
 mod preflight;
 mod pty;

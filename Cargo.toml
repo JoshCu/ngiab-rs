@@ -9,17 +9,26 @@ chrono = "0.4.45"
 clap = { version = "4.6.9", features = ["derive", "env"] }
 csv = "1.4.0"
 dirs = "7.0.0"
+flate2 = "1.1.11"
 netcdf = "0.12"
 portable-pty = "0.9.0"
 ratatui = "0.30"
 rusqlite = { version = "0.43.0", features = ["bundled"] }
+semver = "1.0.28"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
 signal-hook = "0.4.6"
+tar = "0.4.46"
+ureq = { version = "3", default-features = false, features = ["rustls", "json", "gzip"] }
 vt100 = "0.18.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+# Extraction of the Windows release .zip only: deflate decompression through flate2.
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2"] }
 
 [features]
 # Statically link netcdf/hdf5 (used for the container build, mirrors bmi-driver / rs_route)
