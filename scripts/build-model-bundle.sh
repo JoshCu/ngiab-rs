@@ -186,6 +186,11 @@ gate "no dangling symlinks" "$(find "$STAGE" -xtype l -print)"
 
 # ---------------------------------------------------------------- report only
 libs=$(find "$STAGE/dmod/shared_libs" -type f -name '*.so*' | sort)
+# The loops below split $libs on newlines only, so a space in $STAGE (TMPDIR) or
+# in a library name does not break the paths.
+IFS_SAVED=$IFS
+IFS='
+'
 
 report ""
 report "## Report only"
@@ -231,6 +236,7 @@ cxx=$(for so in $libs; do readelf -V "$so" 2>/dev/null | grep -oE 'GLIBCXX_[0-9]
     sed 's/^GLIBCXX_//' | sort -uV | tail -n 1)
 report "- highest GLIBCXX (host libstdc++): ${cxx:-none}"
 report "- **min_glibc: $MIN_GLIBC**"
+IFS=$IFS_SAVED
 
 if [ "$failed" = 1 ]; then
     report ""
