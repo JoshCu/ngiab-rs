@@ -188,23 +188,23 @@ There is no PR-check workflow. It is optional (A.8).
   - `docker build .` still produces a working image: an LSTM realization still runs in it, and `python3` is absent.
 
 ### A.2 Versioning and tagging
-- [ ] **Binary releases.** `Cargo.toml` `version` is the source of truth. To release:
+- [ ] **Binary releases.** `Cargo.toml` `version` is the source of truth. To release: _(not done: README "Releasing" section is a later phase; the steps are in the release.yml header and the proposed text is in the CI phase summary)_
   1. Bump the version.
   2. Run `cargo update -p ngiab-rs --offline`.
   3. Commit as `release vX.Y.Z`.
   4. Run `git tag vX.Y.Z && git push origin main vX.Y.Z`.
 
   Document these steps in a README "Releasing" section.
-- [ ] **Model releases** (user decision). Use separate tags `models-YYYY.MM.DD`, e.g. `models-2026.11.23`. Add a numeric suffix for a second release on the same day (`models-2026.11.23.1`). They are date-versioned, not semver.
+- [x] **Model releases** (user decision). Use separate tags `models-YYYY.MM.DD`, e.g. `models-2026.11.23`. Add a numeric suffix for a second release on the same day (`models-2026.11.23.1`). They are date-versioned, not semver. _(models.yml validates the tag format)_
   - To cut one: bump `NGIAB_BASE` in the Dockerfile (if needed), commit, then `git tag models-$(date +%Y.%m.%d) && git push origin models-…`.
   - The models workflow reads `NGIAB_BASE` from the Dockerfile at the tagged commit.
-- [ ] `release.yml` first job, `check-version`:
+- [x] `release.yml` first job, `check-version`:
   - Fail if `${GITHUB_REF_NAME#v}` does not equal `cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version'`.
   - Output `version` and `prerelease` (true when the tag contains `-`).
-- [ ] **"Latest" must always point at the newest binary release.** Installers and `self update` rely on `releases/latest/download/…`.
+- [ ] **"Latest" must always point at the newest binary release.** Installers and `self update` rely on `releases/latest/download/…`. _(configured in both workflows; not done: confirm on the first real release)_
   - `release.yml` creates stable releases with `make_latest: true` and prereleases with `prerelease: true`.
   - `models.yml` always uses `make_latest: false`.
-- [ ] Both workflows:
+- [x] Both workflows:
   - Have `workflow_dispatch` with a `dry_run` input. A dry run builds everything and uploads workflow artifacts, but creates no release and pushes nothing.
   - Set `permissions: contents: write` and `concurrency: ${{ github.workflow }}-${{ github.ref }}`.
 
@@ -219,33 +219,33 @@ There is no PR-check workflow. It is optional (A.8).
 Why manylinux: a binary built on `ubuntu-24.04` needs glibc 2.39 and would not run on Rocky/RHEL 9 (glibc 2.34), which is typical on HPC. Inside the container, install rustup, `dnf install -y cmake` if it's missing, and check that `zip`/`tar`/`sha256sum` exist.
 
 Each leg:
-- [ ] `actions/checkout@v4`, then `dtolnay/rust-toolchain@stable` with `targets: ${{ matrix.target }}`, then `Swatinem/rust-cache@v2` with `key: ${{ matrix.target }}`.
+- [x] `actions/checkout@v4`, then `dtolnay/rust-toolchain@stable` with `targets: ${{ matrix.target }}`, then `Swatinem/rust-cache@v2` with `key: ${{ matrix.target }}`.
   - The cache matters: static HDF5, netCDF-C and SQLite (`rusqlite` `bundled`) build from source every time. Expect 20–40 minutes for the first run.
-- [ ] Set `env: CMAKE_POLICY_VERSION_MINIMUM: "3.5"`. It's harmless, and it guards against CMake 4.x rejecting the old `cmake_minimum_required` calls in the bundled C sources.
-- [ ] Run `cargo test --locked --target ${{ matrix.target }}`. The tests in `pty.rs` use `sh` and `/`, so gate them with `#[cfg(unix)]` (C.6).
-- [ ] Run `cargo build --release --locked --features static --target ${{ matrix.target }}`.
+- [x] Set `env: CMAKE_POLICY_VERSION_MINIMUM: "3.5"`. It's harmless, and it guards against CMake 4.x rejecting the old `cmake_minimum_required` calls in the bundled C sources. _(manylinux_2_28 ships CMake 4.x, so this is needed)_
+- [x] Run `cargo test --locked --target ${{ matrix.target }}`. The tests in `pty.rs` use `sh` and `/`, so gate them with `#[cfg(unix)]` (C.6). _(runs as `cargo test --release --locked --features static --target …`: without `static` the netcdf crate needs a system libnetcdf, which the runners lack; release+static also shares compiled deps with the build step)_
+- [x] Run `cargo build --release --locked --features static --target ${{ matrix.target }}`.
   - The `static` feature means `netcdf-src` + `hdf5-metno-src`, both built through the `cmake` crate, so every runner needs CMake and a C compiler. GitHub images have both.
   - No curl, libxml2 or m4 is needed (DAP is off).
   - On MSVC, leave the CRT at the default `/MD`.
   - zlib comes from `libz-sys`, built statically.
-- [ ] **Link check.** Fail if anything unexpected is dynamically linked:
+- [x] **Link check.** Fail if anything unexpected is dynamically linked: _(scripts/check-linkage.sh. Linux also allows `libutil.so.1`, which portable-pty's `openpty` needs on glibc < 2.34; macOS also allows `/usr/lib/libobjc*` and `libc++abi`, which objc2/AppKit pull in)_
   - **Linux:** `ldd` may show only `libc`, `libm`, `libpthread`, `libdl`, `librt`, `ld-linux` and `libgcc_s`. In particular, no GTK, because `rfd` must use the xdg-portal backend (D.3).
   - **macOS:** `otool -L` may show only `/usr/lib/libSystem*`, `libc++`, `libiconv` and `/System/Library/Frameworks/*`. AppKit is expected because of `rfd`.
   - **Windows:** use `objdump -p` from Git Bash, or `dumpbin` after `ilammy/msvc-dev-cmd@v1`; `dumpbin` is not on PATH by default. Only system DLLs and VC runtime DLLs are allowed. No `hdf5`, `netcdf` or `zlib1` DLLs.
-- [ ] **Smoke test:** `ngiab-rs --version` prints the tag version.
-- [ ] **Package** (this is part of the contract):
+- [x] **Smoke test:** `ngiab-rs --version` prints the tag version. _(the Linux leg's test, build, link check and smoke test were reproduced locally in `manylinux_2_28_x86_64` (CMake 4.4): 26 tests pass, linkage ok, highest symbol GLIBC_2.28. The macOS and Windows legs need a CI dry run)_
+- [x] **Package** (this is part of the contract):
   - Asset names: `ngiab-rs-<triple>.tar.gz` on Unix, `ngiab-rs-<triple>.zip` on Windows.
   - The archive root holds `ngiab-rs[.exe]`, `README.md` and `LICENSE`, with no wrapping folder.
   - Upload with `actions/upload-artifact@v4`, name `bin-<triple>`.
-- [ ] Set `fail-fast: false`. The release job still needs every leg to succeed.
-- [ ] If the x86_64 macOS build is cross-compiled on arm, HDF5's configure step may need to run test programs under Rosetta. Verify this with a dry run.
+- [x] Set `fail-fast: false`. The release job still needs every leg to succeed.
+- [ ] If the x86_64 macOS build is cross-compiled on arm, HDF5's configure step may need to run test programs under Rosetta. Verify this with a dry run. _(not done: needs a CI dry run; the workflow builds natively on `macos-15-intel`)_
 
 ### A.4 `release.yml`: Docker image (`docker` and `docker-merge` jobs)
-- [ ] `awiciroh/ngiab` and `rockylinux:9.1` are both multi-arch (amd64 and arm64), so the Dockerfile builds for both platforms.
-- [ ] Use native runners, not QEMU, because static HDF5/netCDF builds under emulation take hours:
+- [x] `awiciroh/ngiab` and `rockylinux:9.1` are both multi-arch (amd64 and arm64), so the Dockerfile builds for both platforms.
+- [x] Use native runners, not QEMU, because static HDF5/netCDF builds under emulation take hours:
   - `{platform: linux/amd64, runner: ubuntu-24.04}`
   - `{platform: linux/arm64, runner: ubuntu-24.04-arm}`
-- [ ] Each leg:
+- [x] Each leg: _(the leg also builds with `load: true` and smoke-tests that image before pushing by digest from the same cache)_
   1. Free disk space (`jlumbroso/free-disk-space`). The base image is several GB.
   2. Run `docker/setup-buildx-action@v3` and `docker/login-action@v3` (`DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN`).
   3. Run `docker/build-push-action@v6` with:
@@ -254,22 +254,22 @@ Each leg:
      - `outputs: type=image,name=docker.io/joshcu/ngiab-rs,push-by-digest=true,name-canonical=true,push=${{ !dry_run }}`
      - `cache-from` and `cache-to: type=gha,mode=max,scope=<platform>`. If the 10 GB cache limit becomes a problem, switch to `type=registry,ref=joshcu/ngiab-rs:buildcache-<arch>`.
   4. Upload the digest as an artifact.
-- [ ] `docker-merge` job (skipped on dry runs):
+- [x] `docker-merge` job (skipped on dry runs): _(`X.Y` is, like `latest`, only moved for stable releases so an rc never shadows a stable X.Y)_
   - Run `docker buildx imagetools create` with tags `X.Y.Z` and `X.Y`, plus `latest` only when `prerelease == false`.
   - Run `imagetools inspect` to confirm both platforms are present.
   - Note: Docker tags have **no `v` prefix**. They must match `CARGO_PKG_VERSION`, because that is what the binary uses by default.
-- [ ] Smoke test: `docker run --rm joshcu/ngiab-rs:X.Y.Z --version` on each arch.
-- [ ] Keep `ENTRYPOINT` and `CMD` unchanged. The backend runs the tools with `--entrypoint /usr/local/bin/{bmi-driver,rs-route}` (`src/backend.rs:210`).
+- [ ] Smoke test: `docker run --rm joshcu/ngiab-rs:X.Y.Z --version` on each arch. _(step written, not done: needs a CI run on both arches; each arch tests its locally loaded image before the push, also checking bmi-driver/rs-route and that python3 is absent; amd64 re-tests the merged tag)_
+- [x] Keep `ENTRYPOINT` and `CMD` unchanged. The backend runs the tools with `--entrypoint /usr/local/bin/{bmi-driver,rs-route}` (`src/backend.rs:210`).
 
 ### A.5 `release.yml`: publish job (`release`)
-- [ ] `needs: [check-version, build, docker-merge]`. The image must exist before a binary that defaults to it is published.
-- [ ] Put everything in `dist/`: download all `bin-*` artifacts and copy `install.sh` and `install.ps1` from the repo.
-- [ ] Generate `SHA256SUMS` by running `cd dist && sha256sum * > SHA256SUMS`. This single file covers every asset, including both installers. There are no per-file sidecars.
-- [ ] Create the release with `softprops/action-gh-release@v2`:
+- [x] `needs: [check-version, build, docker-merge]`. The image must exist before a binary that defaults to it is published. _(also needs `docker`; on dry runs the job still assembles `dist/` + `SHA256SUMS` and uploads it as the `release-dist` artifact, but publishes nothing)_
+- [x] Put everything in `dist/`: download all `bin-*` artifacts and copy `install.sh` and `install.ps1` from the repo.
+- [x] Generate `SHA256SUMS` by running `cd dist && sha256sum * > SHA256SUMS`. This single file covers every asset, including both installers. There are no per-file sidecars.
+- [x] Create the release with `softprops/action-gh-release@v2`: _(draft via softprops, then published with `gh release edit --draft=false`)_
   - Create it as a draft, upload all assets, then publish.
   - Set `prerelease` from `check-version`, and `make_latest: true` for stable releases.
   - Use `generate_release_notes: true`.
-- [ ] Final assets:
+- [x] Final assets: _(the job fails if any is missing)_
   - `ngiab-rs-x86_64-unknown-linux-gnu.tar.gz`
   - `ngiab-rs-aarch64-apple-darwin.tar.gz`
   - `ngiab-rs-x86_64-apple-darwin.tar.gz`
@@ -279,8 +279,8 @@ Each leg:
 
 ### A.6 `models.yml`: model bundle (`models` job, `ubuntu-24.04`)
 The bundle is only used by the local backend, which is Linux x86_64 only. The user needs no container runtime.
-- [ ] Read `NGIAB_BASE` with `sed -n 's/^ARG NGIAB_BASE=//p' Dockerfile`. Free disk space, then run `apt-get install -y patchelf`.
-- [ ] **Extract strictly.** Copy only these from the base image:
+- [x] Read `NGIAB_BASE` with `sed -n 's/^ARG NGIAB_BASE=//p' Dockerfile`. Free disk space, then run `apt-get install -y patchelf`.
+- [x] **Extract strictly.** Copy only these from the base image: _(in scripts/build-model-bundle.sh; source_digest is the RepoDigest of the requested repo, since re-tagged images carry several)_
   ```sh
   docker pull --platform linux/amd64 "$NGIAB_BASE"
   digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$NGIAB_BASE")
@@ -294,46 +294,46 @@ The bundle is only used by the local backend, which is Linux x86_64 only. The us
   ```
   - Bundle `libgfortran.so.5` and `libquadmath.so.0`. The GCC runtime library exception allows this, and it means the host needs no gfortran package.
   - Never bundle libc or libstdc++.
-- [ ] **Prune Python.** Run `find stage \( -name .venv -o -name __pycache__ -o -name site-packages -o -name '*.py' -o -name '*.pyc' \) -prune -exec rm -rf {} +`. Python BMI libraries are excluded entirely.
-- [ ] **Relocate** so the bundle works from any directory:
+- [x] **Prune Python.** Run `find stage \( -name .venv -o -name __pycache__ -o -name site-packages -o -name '*.py' -o -name '*.pyc' \) -prune -exec rm -rf {} +`. Python BMI libraries are excluded entirely.
+- [x] **Relocate** so the bundle works from any directory: _(values become `../trained_neuralhydrology_models/<run>[/train_data|/img_log]`: the shipped librust_lstm_1025.so replaces `..` with `<runs>/..`, current rust-lstm joins against `<runs>`; both resolve to the run dir. Verified: a 6-member LSTM ensemble and CFE+Noah-OWP+sloth ran with bmi-driver 0.2.1 against the extracted, read-only bundle)_
   - Run `patchelf --set-rpath '$ORIGIN'` on every regular `.so` file in `dmod/shared_libs`, skipping symlinks. This removes the build RPATHs. Libraries then resolve each other without `LD_LIBRARY_PATH`, which is still set as a belt-and-braces measure (C.4).
   - In `trained_neuralhydrology_models/*/config.yml`, rewrite `run_dir:`, `train_dir:` and `img_log_dir:` to relative values. rust-lstm resolves a relative `run_dir` against the parent of the run dirs; check that the shipped `librust_lstm_*.so` does this.
-- [ ] **Gates.** Each of these fails the job:
+- [x] **Gates.** Each of these fails the job: _(plus a tarball-layout gate; verified to fail on an image with a `/dmod/` text file and a dangling symlink)_
   - Any `.venv`, `__pycache__`, `site-packages`, `*.py` or `*.pyc` remains.
   - `grep -rIl '/ngen/\|/dmod/' stage` finds a text file.
   - `find stage -xtype l` finds a dangling symlink.
   - The tarball is larger than 1 GiB. Expect about 30–80 MB.
-- [ ] **Report only, in the job summary:**
+- [x] **Report only, in the job summary:** _(awiciroh/ngiab:latest: min_glibc 2.34 from librust_lstm_1025.so and libgfortran.so.5; libsummabmi misses netcdf/netcdff/sundials; build paths compiled into most model .so files)_
   - `strings` hits for `/dmod` or `/ngen` inside `.so` files. Paths compiled into binaries can't be rewritten.
   - `ldd` "not found" entries, with `LD_LIBRARY_PATH=stage/dmod/shared_libs`.
   - The highest `GLIBC_x.y` symbol across all `.so` files. Write it into the manifest as `min_glibc` (expected 2.34).
-- [ ] **Manifest.** Write `stage/manifest.json` and the sibling asset `ngiab-models-x86_64-unknown-linux-gnu.json` with the same content:
+- [x] **Manifest.** Write `stage/manifest.json` and the sibling asset `ngiab-models-x86_64-unknown-linux-gnu.json` with the same content:
   ```json
   {"schema":1,"release":"models-2026.11.23","source_image":"awiciroh/ngiab:<tag>","source_digest":"sha256:…",
    "created":"<UTC ISO8601>","target":"x86_64-unknown-linux-gnu","min_glibc":"2.34",
    "prefixes":["/dmod","/ngen/ngen/extern"],"libs":["libcfebmi.so…", "…"]}
   ```
   The sibling `.json` also gets `"tar_sha256"`. The copy inside the tarball can't contain its own hash, so `models update` adds it on install.
-- [ ] **Package:**
+- [x] **Package:** _(awiciroh/ngiab:latest gives an 11 MB tarball)_
   ```sh
   tar --sort=name --owner=0 --group=0 --numeric-owner -C stage -czf ngiab-models-x86_64-unknown-linux-gnu.tar.gz .
   ```
   Use gzip, not zstd, so `tar xzf` works everywhere. Then `sha256sum * > SHA256SUMS`.
-- [ ] **Publish.** Create the release with `softprops/action-gh-release@v2`, tag `models-YYYY.MM.DD`, `make_latest: false`, `prerelease: false`. Assets: the tarball, the `.json` and `SHA256SUMS`. Put the `source_image` and digest in the release body.
-- [ ] **Acceptance:**
+- [ ] **Publish.** Create the release with `softprops/action-gh-release@v2`, tag `models-YYYY.MM.DD`, `make_latest: false`, `prerelease: false`. Assets: the tarball, the `.json` and `SHA256SUMS`. Put the `source_image` and digest in the release body. _(step written; not done: needs a real models-* tag run)_
+- [ ] **Acceptance:** _(partial: the tar layout is verified, and enforced by a gate; CFE+Noah-OWP+sloth and LSTM ran locally from the extracted bundle with paths mapped by hand. Not done: `ngiab-rs models update` on a clean Ubuntu 22.04/24.04 needs B.4 and a published models release)_
   - `tar tzf` lists only `manifest.json`, `dmod/datasets/…`, `dmod/shared_libs/…` and `ngen/ngen/extern/lstm/trained_neuralhydrology_models/…`.
   - After `ngiab-rs models update` on a clean Ubuntu 22.04/24.04 x86_64 machine, a CFE + Noah-OWP + sloth folder and an LSTM folder both run locally with no config edits.
-- [ ] Note: bumping `NGIAB_BASE` only reaches docker/podman users on the next binary release, because the image is rebuilt only by `release.yml`. When the base changes, cut a models tag and a binary patch release together.
+- [x] Note: bumping `NGIAB_BASE` only reaches docker/podman users on the next binary release, because the image is rebuilt only by `release.yml`. When the base changes, cut a models tag and a binary patch release together.
 
 ### A.7 Secrets and settings
-- [ ] Repo secrets:
+- [ ] Repo secrets: _(not done: needs the GitHub repo and a Docker Hub token)_
   - `DOCKERHUB_USERNAME` (`joshcu`).
   - `DOCKERHUB_TOKEN`: a personal access token with Read & Write on `joshcu/ngiab-rs`. The Docker Hub repo must already exist.
-- [ ] `GITHUB_TOKEN` with `contents: write` covers both workflows' release uploads.
-- [ ] Optional: a ruleset on `v*` and `models-*` tags so only maintainers can push them.
+- [x] `GITHUB_TOKEN` with `contents: write` covers both workflows' release uploads.
+- [ ] Optional: a ruleset on `v*` and `models-*` tags so only maintainers can push them. _(not done: needs repo admin on GitHub)_
 
 ### A.8 Optional (not requested)
-- [ ] `ci.yml` on PRs and pushes to `main`, running:
+- [ ] `ci.yml` on PRs and pushes to `main`, running: _(optional, not requested)_
   - `cargo fmt --check`
   - `cargo clippy --all-targets -- -D warnings`
   - `cargo test`
