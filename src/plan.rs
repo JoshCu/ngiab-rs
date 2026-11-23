@@ -58,6 +58,9 @@ pub fn command_for(
     match kind {
         StepKind::Pull => launcher.pull_command(),
         StepKind::Tool(tool) => {
+            // tool_args joins with '/', which is only right for container roots
+            // (local is Linux-only, see backend::LOCAL_SUPPORTED).
+            debug_assert!(launcher.kind.is_container() || cfg!(unix));
             let args = tool_args(tool, &launcher.data_root(), opts.jobs, real);
             let tag = match tool {
                 Tool::BmiDriver => "bmi",

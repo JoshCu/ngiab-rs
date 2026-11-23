@@ -8,6 +8,32 @@ use std::time::{Duration, Instant};
 /// Mount point of the data folder inside the container.
 pub const CONTAINER_DATA: &str = "/data";
 
+/// Default image for the docker/podman backends. Pinned to this binary's version so
+/// the tools in the image always match what this build of ngiab-rs expects.
+pub const DEFAULT_IMAGE: &str = concat!("docker.io/joshcu/ngiab-rs:", env!("CARGO_PKG_VERSION"));
+
+/// The local backend needs the Linux x86_64 (glibc) model bundle. Everywhere else
+/// only docker/podman are offered (except inside our own image, see `Detected::detect`).
+pub const LOCAL_SUPPORTED: bool = cfg!(all(
+    target_os = "linux",
+    target_arch = "x86_64",
+    target_env = "gnu"
+));
+
+/// Are we ourselves running inside a container (docker, podman, ...)?
+#[cfg(unix)]
+pub fn in_container() -> bool {
+    Path::new("/.dockerenv").exists()
+        || Path::new("/run/.containerenv").exists()
+        || std::env::var_os("container").is_some()
+}
+
+/// Are we ourselves running inside a container? Never true on Windows hosts.
+#[cfg(not(unix))]
+pub fn in_container() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum BackendKind {
     Local,
@@ -69,11 +95,17 @@ pub struct Detected {
 
 impl Detected {
     pub fn detect() -> Self {
-        let in_container = Path::new("/.dockerenv").exists()
-            || Path::new("/run/.containerenv").exists()
-            || std::env::var_os("container").is_some();
-        let bmi_driver = find_executable(&["bmi-driver"]);
-        let rs_route = find_executable(&["rs-route", "rs_route"]);
+        let in_container = in_container();
+        // Inside our image the tools and /dmod are native, whatever the arch (the
+        // arm64 image included); on a host, local needs a supported platform.
+        let (bmi_driver, rs_route) = if LOCAL_SUPPORTED || in_container {
+            (
+                find_executable(&["bmi-driver"]),
+                find_executable(&["rs-route", "rs_route"]),
+            )
+        } else {
+            (None, None)
+        };
         // Inside a container we never try to nest another container.
         let (docker, podman) = if in_container {
             (None, None)
@@ -153,22 +185,51 @@ impl Detected {
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
+    /// Extra environment variables set for the child (on top of our own env).
+    pub env: Vec<(String, String)>,
     /// For container runs: (runtime, container name) so the run can be killed.
     pub container: Option<(String, String)>,
 }
 
 impl CommandSpec {
-    pub fn display(&self) -> String {
-        let mut s = self.program.clone();
-        for a in &self.args {
-            s.push(' ');
-            if a.contains(' ') {
-                s.push_str(&format!("'{a}'"));
-            } else {
-                s.push_str(a);
-            }
+    /// A spec with no extra env and no container.
+    pub fn new(program: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            env: vec![],
+            container: None,
         }
-        s
+    }
+
+    /// Copy-pasteable shell form: `K=V ... program args...`.
+    pub fn display(&self) -> String {
+        let mut parts: Vec<String> = self
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={}", shell_quote(v)))
+            .collect();
+        parts.push(shell_quote(&self.program));
+        parts.extend(self.args.iter().map(|a| shell_quote(a)));
+        parts.join(" ")
+    }
+
+    /// Apply program, args and env to a `std::process::Command`.
+    pub fn to_command(&self) -> Command {
+        let mut c = Command::new(&self.program);
+        c.args(&self.args);
+        c.envs(self.env.iter().map(|(k, v)| (k, v)));
+        c
+    }
+}
+
+/// Quote `s` for a POSIX shell if it contains anything beyond a safe character set.
+fn shell_quote(s: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "-_./:=,+@%^".contains(c);
+    if !s.is_empty() && s.chars().all(safe) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
     }
 }
 
@@ -201,15 +262,13 @@ impl Launcher {
         tag: &str,
     ) -> CommandSpec {
         match self.kind {
-            BackendKind::Local => CommandSpec {
-                program: self
-                    .detected
+            BackendKind::Local => CommandSpec::new(
+                self.detected
                     .local_tool(tool)
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| tool.binary().to_string()),
-                args: tool_args,
-                container: None,
-            },
+                tool_args,
+            ),
             kind => {
                 let runtime = kind.name().to_string();
                 let name = format!("ngiab-rs-{}-{}", std::process::id(), tag);
@@ -230,20 +289,17 @@ impl Launcher {
                 ]);
                 args.extend(tool_args);
                 CommandSpec {
-                    program: runtime.clone(),
-                    args,
-                    container: Some((runtime, name)),
+                    container: Some((runtime.clone(), name)),
+                    ..CommandSpec::new(runtime, args)
                 }
             }
         }
     }
 
     pub fn pull_command(&self) -> Option<CommandSpec> {
-        self.kind.is_container().then(|| CommandSpec {
-            program: self.kind.name().into(),
-            args: vec!["pull".into(), self.image.clone()],
-            container: None,
-        })
+        self.kind
+            .is_container()
+            .then(|| CommandSpec::new(self.kind.name(), vec!["pull".into(), self.image.clone()]))
     }
 
     /// Interactive shell in the data folder (host shell or inside the image).
@@ -259,27 +315,9 @@ impl Launcher {
                 "/bin/bash".into(),
                 self.image.clone(),
             ]);
-            CommandSpec {
-                program: self.kind.name().into(),
-                args,
-                container: None,
-            }
+            CommandSpec::new(self.kind.name(), args)
         } else {
-            let shell = std::env::var("SHELL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| {
-                    if Path::new("/bin/bash").exists() {
-                        "/bin/bash".into()
-                    } else {
-                        "/bin/sh".into()
-                    }
-                });
-            CommandSpec {
-                program: shell,
-                args: vec![],
-                container: None,
-            }
+            CommandSpec::new(host_shell(), vec![])
         }
     }
 
@@ -288,6 +326,9 @@ impl Launcher {
     /// rather than relabelling the user's folder.
     fn mount_args(&self) -> Vec<String> {
         let src = self.data_dir.display().to_string();
+        // Docker Desktop / podman machine want a plain `C:\...` path, never `\\?\`.
+        #[cfg(windows)]
+        let src = src.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(src);
         let src = if src.contains(',') || src.contains('"') {
             format!("\"source={}\"", src.replace('"', "\"\""))
         } else {
@@ -308,14 +349,7 @@ impl Launcher {
     fn user_args(&self) -> Vec<String> {
         let rootless = self.detected.runtime(self.kind).is_some_and(|r| r.rootless);
         if self.kind == BackendKind::Docker && !rootless {
-            // SAFETY: getuid/getgid are always successful and have no side effects.
-            let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-            vec![
-                "--user".into(),
-                format!("{uid}:{gid}"),
-                "-e".into(),
-                "HOME=/tmp".into(),
-            ]
+            host_user_args()
         } else {
             vec![]
         }
@@ -333,8 +367,56 @@ impl Launcher {
     }
 }
 
+#[cfg(unix)]
+fn host_user_args() -> Vec<String> {
+    // SAFETY: getuid/getgid are always successful and have no side effects.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    vec![
+        "--user".into(),
+        format!("{uid}:{gid}"),
+        "-e".into(),
+        "HOME=/tmp".into(),
+    ]
+}
+
+/// Docker Desktop on Windows already maps file ownership; there is no uid to pass.
+#[cfg(not(unix))]
+fn host_user_args() -> Vec<String> {
+    vec![]
+}
+
+/// The user's interactive shell on the host.
+#[cfg(unix)]
+fn host_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if Path::new("/bin/bash").exists() {
+                "/bin/bash".into()
+            } else {
+                "/bin/sh".into()
+            }
+        })
+}
+
+/// The user's interactive shell on the host: `%COMSPEC%`, else PowerShell.
+#[cfg(windows)]
+fn host_shell() -> String {
+    std::env::var("COMSPEC")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "powershell.exe".into())
+}
+
+#[cfg(target_os = "linux")]
 fn selinux_enforcing() -> bool {
     std::fs::read_to_string("/sys/fs/selinux/enforce").is_ok_and(|s| s.trim() == "1")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn selinux_enforcing() -> bool {
+    false
 }
 
 /// Kill a running container by name (best effort, used on cancel / exit).
@@ -366,7 +448,7 @@ fn probe_runtime(bin: &str) -> Option<RuntimeInfo> {
         Some(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout).to_lowercase();
             let rootless = if bin == "podman" {
-                text.contains("\"rootless\":true") || unsafe { libc::geteuid() } != 0
+                text.contains("\"rootless\":true") || !running_as_root()
             } else {
                 text.contains("rootless")
             };
@@ -400,6 +482,18 @@ fn probe_runtime(bin: &str) -> Option<RuntimeInfo> {
     }
 }
 
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    // SAFETY: geteuid is always successful and has no side effects.
+    unsafe { libc::geteuid() == 0 }
+}
+
+/// No uid 0 on Windows: podman there only reports rootless via `podman info`.
+#[cfg(not(unix))]
+fn running_as_root() -> bool {
+    true
+}
+
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -410,26 +504,45 @@ fn truncate(s: &str, n: usize) -> String {
 
 /// Search PATH (plus a few common install dirs) for the first of `names`.
 pub fn find_executable(names: &[&str]) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join(".cargo/bin"));
+        dirs.push(home.join(".cargo").join("bin"));
     }
+    #[cfg(unix)]
     dirs.push("/usr/local/bin".into());
     for name in names {
         for d in &dirs {
-            let p = d.join(name);
-            if let Ok(m) = p.metadata()
-                && m.is_file()
-                && m.permissions().mode() & 0o111 != 0
-            {
+            if let Some(p) = executable_in(d, name) {
                 return Some(p);
             }
         }
     }
     None
+}
+
+#[cfg(unix)]
+fn executable_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join(name);
+    let m = p.metadata().ok()?;
+    (m.is_file() && m.permissions().mode() & 0o111 != 0).then_some(p)
+}
+
+/// Windows: `name` itself, then `name` + each `PATHEXT` extension (`.EXE`, `.CMD`, ...).
+#[cfg(windows)]
+fn executable_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    std::iter::once(String::new())
+        .chain(
+            pathext
+                .split(';')
+                .filter(|e| !e.is_empty())
+                .map(str::to_string),
+        )
+        .map(|ext| dir.join(format!("{name}{ext}")))
+        .find(|p| p.is_file())
 }
 
 /// Run a command capturing output, giving up after `timeout`.
@@ -461,7 +574,7 @@ mod tests {
     fn launcher(kind: BackendKind) -> Launcher {
         Launcher {
             kind,
-            image: "docker.io/joshcu/ngiab-rs:latest".into(),
+            image: DEFAULT_IMAGE.into(),
             data_dir: "/home/me/run 1".into(),
             detected: Detected {
                 bmi_driver: Some("/opt/bin/bmi-driver".into()),
@@ -499,13 +612,92 @@ mod tests {
         let joined = c.args.join(" ");
         assert!(joined.contains("--mount type=bind,source=/home/me/run 1,target=/data"));
         assert!(c.args.contains(&"--init".to_string()));
-        assert!(joined.contains(
-            "--entrypoint /usr/local/bin/rs-route docker.io/joshcu/ngiab-rs:latest /data"
-        ));
+        assert!(joined.contains(&format!(
+            "--entrypoint /usr/local/bin/rs-route docker.io/joshcu/ngiab-rs:{} /data",
+            env!("CARGO_PKG_VERSION")
+        )));
         assert!(c.args.contains(&"-t".to_string()));
         // rootless docker -> no --user mapping
         assert!(!c.args.contains(&"--user".to_string()));
         assert!(c.container.is_some());
+    }
+
+    #[test]
+    fn display_prints_env_first_and_quotes() {
+        let mut c = CommandSpec::new(
+            "/opt/bin/bmi-driver",
+            vec![
+                "/home/me/run 1".into(),
+                "-j".into(),
+                "4".into(),
+                "it's".into(),
+            ],
+        );
+        assert_eq!(
+            c.display(),
+            r"/opt/bin/bmi-driver '/home/me/run 1' -j 4 'it'\''s'"
+        );
+        c.env = vec![
+            ("LD_LIBRARY_PATH".into(), "/home/me/.ngiab/x y".into()),
+            ("OMP_NUM_THREADS".into(), "1".into()),
+        ];
+        assert_eq!(
+            c.display(),
+            "LD_LIBRARY_PATH='/home/me/.ngiab/x y' OMP_NUM_THREADS=1 \
+             /opt/bin/bmi-driver '/home/me/run 1' -j 4 'it'\\''s'"
+        );
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn default_image_is_pinned_to_crate_version() {
+        assert_eq!(
+            DEFAULT_IMAGE,
+            format!("docker.io/joshcu/ngiab-rs:{}", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(!DEFAULT_IMAGE.ends_with(":latest"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn to_command_applies_env() {
+        let mut c = CommandSpec::new("sh", vec!["-c".into(), "printf %s \"$NGIAB_Y\"".into()]);
+        c.env.push(("NGIAB_Y".into(), "ok".into()));
+        let out = c.to_command().output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "ok");
+    }
+
+    /// The Dockerfile's build-arg defaults must match TOOL_VERSIONS, and the base
+    /// image must be pinned to a vX.Y.Z tag (models.yml reads it with sed).
+    #[test]
+    fn dockerfile_pins_match_tool_versions() {
+        let dockerfile = include_str!("../Dockerfile");
+        let versions = include_str!("../TOOL_VERSIONS");
+        let arg = |key: &str| {
+            dockerfile
+                .lines()
+                .find_map(|l| l.strip_prefix(&format!("ARG {key}=")))
+                .unwrap_or_else(|| panic!("Dockerfile has no ARG {key}="))
+                .trim()
+                .to_string()
+        };
+        let mut n = 0;
+        for line in versions.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (k, v) = line.split_once('=').expect("KEY=value");
+            assert_eq!(arg(k), v, "Dockerfile ARG {k} differs from TOOL_VERSIONS");
+            n += 1;
+        }
+        assert_eq!(n, 2);
+        let base = arg("NGIAB_BASE");
+        let tag = base.strip_prefix("awiciroh/ngiab:v").expect(&base);
+        assert_eq!(
+            tag.split('.').filter(|p| p.parse::<u32>().is_ok()).count(),
+            3,
+            "{base}"
+        );
     }
 
     #[test]

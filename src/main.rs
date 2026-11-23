@@ -44,11 +44,7 @@ struct Cli {
     backend: Option<BackendKind>,
 
     /// Container image used by the docker/podman backends
-    #[arg(
-        long,
-        env = "NGIAB_RS_IMAGE",
-        default_value = "docker.io/joshcu/ngiab-rs:latest"
-    )]
+    #[arg(long, env = "NGIAB_RS_IMAGE", default_value = backend::DEFAULT_IMAGE)]
     image: String,
 
     /// Only run bmi-driver (auto mode)
@@ -126,11 +122,16 @@ fn main() -> ExitCode {
     // SIGTERM/SIGHUP (terminal closed, `kill`) must still stop containers and restore
     // the terminal; SIGINT only arrives from outside since raw mode eats ctrl-c.
     let term = Arc::new(AtomicBool::new(false));
-    for sig in [
+    #[cfg(unix)]
+    let signals = [
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGHUP,
         signal_hook::consts::SIGINT,
-    ] {
+    ];
+    // No SIGHUP on Windows; signal-hook maps these onto console control events.
+    #[cfg(windows)]
+    let signals = [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT];
+    for sig in signals {
         let _ = signal_hook::flag::register(sig, Arc::clone(&term));
     }
 
@@ -205,10 +206,7 @@ fn run_shell(app: &App) {
         l.data_dir.display()
     );
     println!("\x1b[2m$ {}\x1b[0m", spec.display());
-    let status = std::process::Command::new(&spec.program)
-        .args(&spec.args)
-        .current_dir(&l.data_dir)
-        .status();
+    let status = spec.to_command().current_dir(&l.data_dir).status();
     if let Err(e) = status {
         eprintln!("could not start shell: {e}");
         std::thread::sleep(Duration::from_secs(2));

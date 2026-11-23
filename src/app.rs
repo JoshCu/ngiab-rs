@@ -224,7 +224,7 @@ impl App {
 
     fn submit_path(&mut self) {
         let raw = self.path_input.trim();
-        let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+        let expanded = if let Some(rest) = strip_home_prefix(raw) {
             dirs::home_dir()
                 .map(|h| h.join(rest))
                 .unwrap_or_else(|| raw.into())
@@ -641,14 +641,14 @@ impl App {
         }
     }
 
-    /// Shell-like Tab completion of directory names.
+    /// Shell-like Tab completion of directory names. (Superseded by the D.2 picker.)
     fn complete_path(&mut self) {
         let input = self.path_input.clone();
-        let (dir, prefix) = match input.rfind('/') {
+        let (dir, prefix) = match input.rfind(is_sep) {
             Some(i) => (input[..=i].to_string(), input[i + 1..].to_string()),
             None => ("./".to_string(), input.clone()),
         };
-        let lookup = if let Some(rest) = dir.strip_prefix("~/") {
+        let lookup = if let Some(rest) = strip_home_prefix(&dir) {
             dirs::home_dir()
                 .map(|h| h.join(rest))
                 .unwrap_or_else(|| dir.clone().into())
@@ -675,14 +675,14 @@ impl App {
                 .map(|(a, _)| a)
                 .collect()
         });
-        let base = if input.contains('/') {
+        let base = if input.contains(is_sep) {
             dir
         } else {
             String::new()
         };
         self.path_input = format!("{base}{common}");
         if matches.len() == 1 {
-            self.path_input.push('/');
+            self.path_input.push(std::path::MAIN_SEPARATOR);
         } else {
             self.flash(
                 matches
@@ -830,4 +830,16 @@ fn scroll_view(run: &mut RunState, delta: isize) {
     if let Some(p) = run.steps.get_mut(run.view).and_then(|s| s.proc.as_mut()) {
         p.scroll(delta);
     }
+}
+
+/// Path separators accepted in typed paths (`/` everywhere, also `\` on Windows).
+fn is_sep(c: char) -> bool {
+    c == '/' || c == std::path::MAIN_SEPARATOR
+}
+
+/// `~/rest` (or `~\rest` on Windows) -> `rest`.
+fn strip_home_prefix(p: &str) -> Option<&str> {
+    p.strip_prefix('~')
+        .filter(|r| r.starts_with(is_sep))
+        .map(|r| &r[1..])
 }

@@ -49,6 +49,9 @@ impl PtyProcess {
         cmd.args(&spec.args);
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
+        for (k, v) in &spec.env {
+            cmd.env(k, v);
+        }
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -366,16 +369,28 @@ mod tests {
         assert!(!awaiting_answer("running"));
     }
 
+    /// Spawn `spec`, wait (up to 10s) for it to finish and return the screen text.
+    fn run_to_end(spec: CommandSpec, cwd: &Path) -> String {
+        let mut p = PtyProcess::spawn(spec, cwd, 10, 40).unwrap();
+        let start = Instant::now();
+        while p.finished().is_none() && start.elapsed() < Duration::from_secs(10) {
+            p.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(p.finished().expect("command did not finish").success());
+        p.screen().contents()
+    }
+
+    #[cfg(unix)]
     #[test]
     fn poll_is_bounded_under_flood() {
-        let spec = CommandSpec {
-            program: "sh".into(),
-            args: vec![
+        let spec = CommandSpec::new(
+            "sh",
+            vec![
                 "-c".into(),
                 "yes 'Musk Cunge WARNING: Failure to converge on node 12345 timestep 99'".into(),
             ],
-            container: None,
-        };
+        );
         let mut p = PtyProcess::spawn(spec, Path::new("/"), 40, 150).unwrap();
         std::thread::sleep(Duration::from_millis(300));
         for _ in 0..5 {
@@ -390,22 +405,36 @@ mod tests {
         p.kill();
     }
 
+    #[cfg(unix)]
     #[test]
     fn pty_runs_command() {
-        let spec = CommandSpec {
-            program: "sh".into(),
-            args: vec!["-c".into(), "printf 'hello\\n3/9 nodes\\n'".into()],
-            container: None,
-        };
-        let mut p = PtyProcess::spawn(spec, Path::new("/"), 10, 40).unwrap();
-        let start = Instant::now();
-        while p.finished().is_none() && start.elapsed() < Duration::from_secs(5) {
-            p.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(p.finished().unwrap().success());
-        let c = p.screen().contents();
+        let spec = CommandSpec::new(
+            "sh",
+            vec!["-c".into(), "printf 'hello\\n3/9 nodes\\n'".into()],
+        );
+        let c = run_to_end(spec, Path::new("/"));
         assert!(c.contains("hello"), "{c}");
         assert_eq!(parse_progress(&c), Some((3, 9)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pty_applies_env() {
+        let mut spec = CommandSpec::new(
+            "sh",
+            vec!["-c".into(), "printf '%s\\n' \"$NGIAB_X\"".into()],
+        );
+        spec.env.push(("NGIAB_X".into(), "from-spec".into()));
+        let c = run_to_end(spec, Path::new("/"));
+        assert!(c.contains("from-spec"), "{c}");
+    }
+
+    /// ConPTY smoke test.
+    #[cfg(windows)]
+    #[test]
+    fn pty_runs_command_windows() {
+        let spec = CommandSpec::new("cmd", vec!["/C".into(), "echo hello".into()]);
+        let c = run_to_end(spec, &std::env::temp_dir());
+        assert!(c.contains("hello"), "{c}");
     }
 }

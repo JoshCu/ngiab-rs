@@ -5,7 +5,7 @@ use crate::backend::{Launcher, Tool};
 use crate::plan::{self, RunOptions, StepKind};
 use crate::preflight::{self, Level};
 use std::io::IsTerminal;
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 use std::time::Instant;
 
 fn color(level: Level) -> &'static str {
@@ -69,10 +69,7 @@ pub fn run(launcher: Launcher, opts: RunOptions) -> ExitCode {
         };
         eprintln!("\n{bold}▶ {}{reset}  {}", kind.label(), spec.display());
         let start = Instant::now();
-        let status = Command::new(&spec.program)
-            .args(&spec.args)
-            .current_dir(&launcher.data_dir)
-            .status();
+        let status = spec.to_command().current_dir(&launcher.data_dir).status();
         match status {
             Ok(s) if s.success() => {
                 eprintln!(
