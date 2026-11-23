@@ -18,6 +18,12 @@ ngiab-rs [DATA_DIR] [--auto] [-j N] [--backend local|docker|podman] [--image IMA
 | `--image` | image for container backends (default `docker.io/joshcu/ngiab-rs:<version of this binary>`, or `NGIAB_RS_IMAGE`). |
 | `--no-routing` | auto mode: only run bmi-driver. |
 
+Other subcommands: `ngiab-rs self update`, `ngiab-rs models update|revert|status` and
+`ngiab-rs backend list|install` (see `ngiab-rs --help`). `ngiab-rs run [DATA_DIR] [flags]` is the
+explicit form of the default action. Because of this, a data folder named `self`, `models`,
+`backend` or `run` is read as a subcommand: write it as a path (`ngiab-rs ./models`) or use
+`ngiab-rs run models`.
+
 ## Interactive mode
 
 * **Home**: menu, available backends (press `b` to switch), jobs (`+`/`-`), and the preflight checks:

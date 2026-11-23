@@ -1,17 +1,22 @@
 mod app;
 mod auto;
 mod backend;
+mod cli;
 mod config;
 mod eval;
 mod home;
+mod installer;
+mod models;
 mod plan;
 mod preflight;
 mod pty;
+mod selfupdate;
 mod ui;
 
 use app::App;
 use backend::{BackendKind, Detected, Launcher};
 use clap::Parser;
+use cli::{BackendCmd, Cli, Cmd, ModelsCmd, RunArgs, SelfCmd};
 use ratatui::crossterm::event::{self, Event};
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -20,50 +25,44 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// NextGen In A Box (Rust): run bmi-driver + rs-route and inspect the results.
-#[derive(Parser, Debug)]
-#[command(version, about)]
-struct Cli {
-    /// Data folder containing config/, forcings/ and outputs/
-    path: Option<PathBuf>,
-
-    /// Non-interactive: run preflight checks, bmi-driver, then rs-route and exit
-    #[arg(long)]
-    auto: bool,
-
-    /// Number of CPUs to use (bmi-driver -j / rs-route -n). Defaults to all CPUs.
-    #[arg(
-        short = 'j',
-        long = "jobs",
-        visible_alias = "num-cpus",
-        value_name = "N"
-    )]
-    jobs: Option<usize>,
-
-    /// Where to run the tools. Default: local binaries > docker > podman
-    #[arg(short, long, value_enum, env = "NGIAB_RS_BACKEND")]
-    backend: Option<BackendKind>,
-
-    /// Container image used by the docker/podman backends
-    #[arg(long, env = "NGIAB_RS_IMAGE", default_value = backend::DEFAULT_IMAGE)]
-    image: String,
-
-    /// Only run bmi-driver (auto mode)
-    #[arg(long)]
-    no_routing: bool,
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // `self` and `models` must not run `Detected::detect()`: the docker/podman
+    // probes can take seconds.
+    let res = match cli.cmd {
+        None => return run_main(cli.run),
+        Some(Cmd::Run(run)) => return run_main(run),
+        Some(Cmd::SelfManage {
+            cmd: SelfCmd::Update(a),
+        }) => selfupdate::update(&a),
+        Some(Cmd::Models { cmd }) => match cmd {
+            ModelsCmd::Update(a) => models::update(&a),
+            ModelsCmd::Revert { yes } => models::revert(yes),
+            ModelsCmd::Status => models::status(),
+        },
+        Some(Cmd::Backend { cmd }) => match cmd {
+            BackendCmd::List => installer::list(),
+            BackendCmd::Install { kinds } => installer::install(&kinds),
+            BackendCmd::Record { kinds } => installer::record(&kinds),
+        },
+    };
+    res.unwrap_or_else(|e| {
+        eprintln!("error: {e:#}");
+        ExitCode::FAILURE
+    })
+}
+
+/// The default action: the TUI, or a headless run with `--auto`.
+fn run_main(args: RunArgs) -> ExitCode {
     let detected = Detected::detect();
 
     // Inside the container the data folder is always mounted at /data.
-    let path = cli.path.clone().or_else(|| {
+    let path = args.path.clone().or_else(|| {
         let d = PathBuf::from(backend::CONTAINER_DATA);
         (detected.in_container && d.is_dir()).then_some(d)
     });
 
-    if let Some(b) = cli.backend
+    if let Some(b) = args.backend
         && !detected.available(b)
     {
         eprintln!(
@@ -74,7 +73,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if cli.auto {
+    if args.auto {
         let Some(path) = path else {
             eprintln!("--auto needs a data folder: ngiab-rs <PATH> --auto");
             return ExitCode::FAILURE;
@@ -90,17 +89,17 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        let Some(kind) = cli.backend.or_else(|| detected.default_kind()) else {
+        let Some(kind) = args.backend.or_else(|| detected.default_kind()) else {
             eprintln!("No backend found: install bmi-driver + rs-route, docker, or podman.");
             return ExitCode::FAILURE;
         };
         let launcher = Launcher {
             kind,
-            image: cli.image,
+            image: args.image,
             data_dir,
             detected,
         };
-        let jobs = cli
+        let jobs = args
             .jobs
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
             .max(1);
@@ -108,7 +107,7 @@ fn main() -> ExitCode {
             launcher,
             plan::RunOptions {
                 jobs,
-                routing: !cli.no_routing,
+                routing: !args.no_routing,
             },
         );
     }
@@ -136,7 +135,7 @@ fn main() -> ExitCode {
         let _ = signal_hook::flag::register(sig, Arc::clone(&term));
     }
 
-    let mut app = App::new(path, detected, cli.backend, cli.image, cli.jobs);
+    let mut app = App::new(path, detected, args.backend, args.image, args.jobs);
     let res = run_tui(&mut app, &term);
     // Stops any running step (kills its container) before we exit.
     app.shutdown();
