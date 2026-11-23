@@ -155,10 +155,33 @@ fn walk_strings(
     }
 }
 
+/// `p` with `.` and `..` resolved lexically (no filesystem access).
+fn lexical(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else if !out.has_root() {
+                    out.push(c);
+                }
+                // `/..` is `/`
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// Where a config file is staged: its path relative to the data folder, or (for
-/// files elsewhere) its absolute path without the leading `/`.
+/// files elsewhere) its absolute path without the leading `/`. Always a plain
+/// relative path (no `..`), so it stays inside the staging dir it is joined to.
 fn stage_rel(data_dir: &Path, host: &Path) -> PathBuf {
-    match host.strip_prefix(data_dir) {
+    let host = lexical(host);
+    match host.strip_prefix(lexical(data_dir)) {
         Ok(rel) => rel.to_path_buf(),
         Err(_) => host
             .components()
@@ -320,14 +343,17 @@ pub fn stage(
     let mut values = 0;
     let mut inits: Vec<(String, String)> = vec![];
     walk_strings(&mut real, &mut String::new(), &mut |ptr, key, s| {
+        // The user's template, not its rewritten form: a host path that happens to
+        // start with a mapped prefix (a data folder under `/data/...`) must not be
+        // mapped a second time when the files are resolved.
+        if key == Some("init_config") && !s.is_empty() {
+            inits.push((ptr.to_string(), s.clone()));
+        }
         if let Some(new) = map.rewrite_str(s) {
             reverse.entry(new.clone()).or_insert_with(|| s.clone());
             restores.insert(ptr.to_string(), (new.clone(), s.clone()));
             *s = new;
             values += 1;
-        }
-        if key == Some("init_config") && !s.is_empty() {
-            inits.push((ptr.to_string(), s.clone()));
         }
     });
 
@@ -402,14 +428,30 @@ pub fn write_back(staged: &Staged, map: &PathMap, data_dir: &Path) -> Result<Opt
             && new == s
         {
             *s = user.clone();
-        } else if staged.original.pointer(ptr).is_some() {
-            // The user's own value (or one bmi-driver changed on purpose).
+        } else if staged.original.pointer(ptr).and_then(Value::as_str) == Some(s.as_str()) {
+            // The user's own value, unchanged.
         } else if let Some(user) = staged.reverse.get(s.as_str()) {
             *s = user.clone();
         } else if let Some(user) = map.unrewrite_str(s) {
             *s = user;
         }
     });
+    // Never write a path into the stage dir (wiped on the next run) into the user's
+    // realization; keep their file and point at the staged one instead.
+    let stage = stage_dir(data_dir).display().to_string();
+    let mut leaked = None;
+    walk_strings(&mut v, &mut String::new(), &mut |ptr, _, s| {
+        if leaked.is_none() && s.contains(&stage) {
+            leaked = Some(format!("{ptr} = {s}"));
+        }
+    });
+    if let Some(l) = leaked {
+        anyhow::bail!(
+            "bmi-driver's update could not be mapped back to container paths ({l}), so \
+             config/realization.json was left unchanged; its version is {}",
+            staged.realization.display()
+        );
+    }
     let real = data_dir.join("config").join("realization.json");
     let current = std::fs::read(&real).with_context(|| format!("reading {}", real.display()))?;
     if hash_bytes(&current) != staged.user_hash {
@@ -708,6 +750,164 @@ mod tests {
         );
         assert_eq!(mods[1]["params"]["library_file"], literal.as_str());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A data folder whose host path starts with a mapped prefix (a server's
+    /// `/data/...`): the init_config template must be resolved from the user's
+    /// string, not from its already rewritten form (which would be mapped twice).
+    #[test]
+    fn host_path_under_a_mapped_prefix_is_not_mapped_twice() {
+        let base = tmp("twice");
+        std::fs::create_dir_all(base.join("config")).unwrap();
+        std::fs::write(
+            base.join("config/realization.json"),
+            r#"{"global":{"formulations":[{"name":"bmi_c","params":{
+               "library_file":"/opt/lib/x.so","init_config":"/ngen/ngen/data/config/one.yml"}}]},
+               "time":{"start_time":"a","end_time":"b"}}"#,
+        )
+        .unwrap();
+        std::fs::write(base.join("config/one.yml"), "run_dir: /dmod/m\n").unwrap();
+        // Stand-in for `/data`: a bundle prefix that the data folder itself is under.
+        let top = format!(
+            "/{}",
+            base.components()
+                .find_map(|c| match c {
+                    std::path::Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .unwrap()
+        );
+        let m = PathMap {
+            prefixes: vec!["/dmod".into(), top],
+            ..map(&base, Path::new("/b"))
+        };
+        let s = stage(&m, &base, &[], &Progress::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.rewrote, 1);
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&s.realization).unwrap()).unwrap();
+        let init = v["global"]["formulations"][0]["params"]["init_config"]
+            .as_str()
+            .unwrap();
+        assert!(
+            init.starts_with(&stage_dir(&base).display().to_string()),
+            "{init}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(init).unwrap(),
+            "run_dir: /b/dmod/m\n"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `..` in an init_config template never puts a staged file outside the stage
+    /// dir (where it could overwrite one of the user's files).
+    #[test]
+    fn parent_dirs_in_templates_stay_inside_the_stage_dir() {
+        let base = tmp("dotdot");
+        let data = base.join("a/b/c/d/data");
+        std::fs::create_dir_all(data.join("config")).unwrap();
+        std::fs::create_dir_all(base.join("ext")).unwrap();
+        std::fs::write(base.join("ext/cat-1.ini"), "p=/dmod/x\n").unwrap();
+        // the user's file where the unnormalised staged path would have landed
+        let victim = base.join("a/b/c/d/ext/cat-1.ini");
+        std::fs::create_dir_all(victim.parent().unwrap()).unwrap();
+        std::fs::write(&victim, "mine\n").unwrap();
+        std::fs::write(
+            data.join("config/realization.json"),
+            r#"{"global":{"formulations":[{"name":"bmi_c","params":{
+               "init_config":"../../../../../ext/{{id}}.ini"}}]},
+               "time":{"start_time":"a","end_time":"b"}}"#,
+        )
+        .unwrap();
+        let m = map(&data, Path::new("/b"));
+        let s = stage(&m, &data, &["cat-1".into()], &Progress::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.rewrote, 1);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&s.realization).unwrap()).unwrap();
+        let init = v["global"]["formulations"][0]["params"]["init_config"]
+            .as_str()
+            .unwrap();
+        assert!(!init.contains(".."), "{init}");
+        assert!(
+            init.starts_with(&stage_dir(&data).display().to_string()),
+            "{init}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(init.replace("{{id}}", "cat-1")).unwrap(),
+            "p=/b/dmod/x\n"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn lexical_paths() {
+        assert_eq!(lexical(Path::new("/a/./b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(lexical(Path::new("/../a")), PathBuf::from("/a"));
+        assert_eq!(lexical(Path::new("../a/../../b")), PathBuf::from("../../b"));
+        assert_eq!(
+            stage_rel(Path::new("/d/x"), Path::new("/d/x/../../e/f")),
+            PathBuf::from("e/f")
+        );
+        assert_eq!(
+            stage_rel(Path::new("/d/x"), Path::new("/d/x/./config/f")),
+            PathBuf::from("config/f")
+        );
+    }
+
+    /// Staged values that moved (or that bmi-driver changed) are still mapped back,
+    /// and a stage-dir path that can't be mapped back is never written to the
+    /// user's file.
+    #[test]
+    fn write_back_maps_moved_values_and_refuses_stage_paths() {
+        let (data, root, ids) = data_folder("moved");
+        let m = map(&data, &root);
+        let before = std::fs::read(data.join("config/realization.json")).unwrap();
+        let s = stage(&m, &data, &ids, &Progress::default())
+            .unwrap()
+            .unwrap();
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&s.realization).unwrap()).unwrap();
+        // swap two staged library paths: pointers no longer match their values
+        let mut v2 = v.clone();
+        let mods = &mut v2["global"]["formulations"][0]["params"]["modules"];
+        let a = mods[0]["params"]["library_file"].clone();
+        mods[0]["params"]["library_file"] = mods[2]["params"]["library_file"].clone();
+        mods[2]["params"]["library_file"] = a;
+        std::fs::write(&s.realization, v2.to_string()).unwrap();
+        write_back(&s, &m, &data).unwrap().unwrap();
+        let text = std::fs::read_to_string(data.join("config/realization.json")).unwrap();
+        assert!(!text.contains(&root.display().to_string()), "{text}");
+        let back: Value = serde_json::from_str(&text).unwrap();
+        let mods = &back["global"]["formulations"][0]["params"]["modules"];
+        assert_eq!(
+            mods[0]["params"]["library_file"],
+            "/dmod/shared_libs/libcfebmi.so.1.0.0"
+        );
+        assert_eq!(
+            mods[2]["params"]["library_file"],
+            "/dmod/shared_libs/libslothmodel.so"
+        );
+
+        // a stage-dir path with no reverse mapping: the user's file is kept
+        std::fs::write(data.join("config/realization.json"), &before).unwrap();
+        let s = stage(&m, &data, &ids, &Progress::default())
+            .unwrap()
+            .unwrap();
+        let mut v3 = v.clone();
+        v3["extra"] = Value::String(stage_dir(&data).join("init/9/x.ini").display().to_string());
+        std::fs::write(&s.realization, v3.to_string()).unwrap();
+        let e = write_back(&s, &m, &data).unwrap_err();
+        assert!(format!("{e:#}").contains("left unchanged"), "{e:#}");
+        assert_eq!(
+            std::fs::read(data.join("config/realization.json")).unwrap(),
+            before
+        );
+        let _ = std::fs::remove_dir_all(data.parent().unwrap());
     }
 
     #[test]

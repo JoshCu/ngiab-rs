@@ -72,10 +72,22 @@ impl Manifest {
     }
 
     /// The mapped container prefixes: the manifest's, else [`DEFAULT_PREFIXES`].
+    /// Entries are normalised to `/x[/y]` without a trailing `/`; anything that isn't
+    /// absolute, or is `/` itself (which would map every path), is dropped.
     pub fn prefixes_or_default(m: Option<&Self>) -> Vec<String> {
-        match m {
-            Some(m) if !m.prefixes.is_empty() => m.prefixes.clone(),
-            _ => DEFAULT_PREFIXES.iter().map(|s| s.to_string()).collect(),
+        let listed: Vec<String> = m
+            .map(|m| {
+                m.prefixes
+                    .iter()
+                    .map(|p| p.trim().trim_end_matches('/').to_string())
+                    .filter(|p| p.starts_with('/') && !p.contains("//"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if listed.is_empty() {
+            DEFAULT_PREFIXES.iter().map(|s| s.to_string()).collect()
+        } else {
+            listed
         }
     }
 
@@ -156,6 +168,17 @@ mod tests {
             vec!["/dmod", "/ngen/ngen/extern"]
         );
         assert_eq!(Manifest::prefixes_or_default(None).len(), 2);
+        // `/`, empty and relative entries would map everything (or nothing): dropped
+        let odd = Manifest {
+            prefixes: vec!["/".into(), "".into(), "dmod".into(), "/dmod/".into()],
+            ..Default::default()
+        };
+        assert_eq!(Manifest::prefixes_or_default(Some(&odd)), vec!["/dmod"]);
+        let none_valid = Manifest {
+            prefixes: vec!["/".into()],
+            ..Default::default()
+        };
+        assert_eq!(Manifest::prefixes_or_default(Some(&none_valid)).len(), 2);
     }
 
     #[test]

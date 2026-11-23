@@ -105,8 +105,12 @@ pub fn safe_to_clean(data_dir: &Path, dir: &Path) -> bool {
             .all(|k| !data.join(k).starts_with(d) && !d.starts_with(data.join(k)))
     };
     let (Ok(data), Ok(d)) = (data_dir.canonicalize(), dir.canonicalize()) else {
-        // Not existing yet is fine (nothing to clean); just require it be inside.
-        return dir.starts_with(data_dir) && dir != data_dir && keeps(data_dir, dir);
+        // Not existing yet is fine (nothing to clean); just require it be inside,
+        // with no `..` that could lead back into a kept folder once it exists.
+        let dotdot = dir
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+        return !dotdot && dir.starts_with(data_dir) && dir != data_dir && keeps(data_dir, dir);
     };
     d.starts_with(&data)
         && d != data
@@ -672,6 +676,11 @@ mod tests {
         assert!(!safe_to_clean(&d, d.parent().unwrap()));
         assert!(safe_to_clean(&d, &d.join("outputs/ngen")));
         assert!(safe_to_clean(&d, &d.join("outputs/not-yet")));
+        // a not-yet-existing dir that leads back into config/ is refused
+        assert!(!safe_to_clean(
+            &d,
+            &d.join("outputs/missing/../../config/x")
+        ));
         // ngiab-rs' own folder and eval/ are never cleaned
         std::fs::create_dir_all(d.join(".ngiab-rs/stage")).unwrap();
         std::fs::create_dir_all(d.join("eval/ngiab-rs")).unwrap();
