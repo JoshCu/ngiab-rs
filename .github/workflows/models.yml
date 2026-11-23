@@ -1,0 +1,155 @@
+# Model bundle for the local backend (Linux x86_64 only).
+#
+# Tag `models-YYYY.MM.DD` (or `models-YYYY.MM.DD.N` for a second release on the
+# same day) to publish. The bundle is extracted from the NGIAB base image that
+# the Dockerfile pins (`ARG NGIAB_BASE=...`) at the tagged commit, by
+# scripts/build-model-bundle.sh (which can also be run locally).
+#
+# workflow_dispatch with dry_run=true builds the bundle and uploads it as a
+# workflow artifact without creating a release.
+name: models
+
+on:
+  push:
+    tags: ["models-*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: build and upload workflow artifacts only (no release)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  models:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release name and base image
+        id: meta
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_INPUT: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          dry=false
+          if [ "$EVENT" = workflow_dispatch ] && [ "$DRY_INPUT" = true ]; then dry=true; fi
+
+          if [[ "$GITHUB_REF" == refs/tags/models-* ]]; then
+            release=$GITHUB_REF_NAME
+            if ! [[ "$release" =~ ^models-[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$ ]]; then
+              echo "::error::tag '$release' must look like models-YYYY.MM.DD or models-YYYY.MM.DD.N"
+              exit 1
+            fi
+          elif [ "$dry" = true ]; then
+            release="models-$(date -u +%Y.%m.%d)-dryrun"
+          else
+            echo "::error::a non-dry run must be started from a models-* tag (got $GITHUB_REF)"
+            exit 1
+          fi
+
+          base=$(sed -n 's/^ARG NGIAB_BASE=//p' Dockerfile | head -n 1)
+          if [ -z "$base" ]; then
+            echo "::error::no 'ARG NGIAB_BASE=' line in Dockerfile"
+            exit 1
+          fi
+
+          {
+            echo "dry_run=$dry"
+            echo "release=$release"
+            echo "base=$base"
+          } >> "$GITHUB_OUTPUT"
+          echo "release=$release base=$base dry_run=$dry"
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          swap-storage: false
+
+      - name: Install patchelf
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+          for t in jq readelf strings ldd sha256sum; do command -v "$t"; done
+
+      - name: Build model bundle
+        env:
+          PULL: "1"
+          BASE: ${{ steps.meta.outputs.base }}
+          RELEASE: ${{ steps.meta.outputs.release }}
+        run: scripts/build-model-bundle.sh "$BASE" "$RELEASE" dist
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f dist/bundle-report.md ]; then
+            cat dist/bundle-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Check bundle
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          tar=ngiab-models-x86_64-unknown-linux-gnu.tar.gz
+          json=ngiab-models-x86_64-unknown-linux-gnu.json
+          jq -e --arg sha "$(sha256sum "$tar" | cut -d' ' -f1)" '.schema == 1 and .tar_sha256 == $sha and (.min_glibc | length > 0)' "$json"
+          tar xzf "$tar" -O ./manifest.json | jq -e '.libs | length > 0'
+          ls -l
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: models-${{ steps.meta.outputs.release }}
+          path: |
+            dist/ngiab-models-x86_64-unknown-linux-gnu.tar.gz
+            dist/ngiab-models-x86_64-unknown-linux-gnu.json
+            dist/SHA256SUMS
+            dist/bundle-report.md
+          if-no-files-found: error
+
+      - name: Release notes
+        if: steps.meta.outputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          m=dist/ngiab-models-x86_64-unknown-linux-gnu.json
+          {
+            echo "Model bundle for the ngiab-rs local backend (Linux x86_64, glibc >= $(jq -r .min_glibc "$m"))."
+            echo
+            echo "- source image: \`$(jq -r .source_image "$m")\`"
+            echo "- source digest: \`$(jq -r .source_digest "$m")\`"
+            echo "- created: $(jq -r .created "$m")"
+            echo
+            echo "Install or update with \`ngiab-rs models update\`."
+          } > dist/notes.md
+
+      - name: Publish release
+        if: steps.meta.outputs.dry_run != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.release }}
+          name: ${{ steps.meta.outputs.release }}
+          body_path: dist/notes.md
+          prerelease: false
+          make_latest: "false"
+          fail_on_unmatched_files: true
+          files: |
+            dist/ngiab-models-x86_64-unknown-linux-gnu.tar.gz
+            dist/ngiab-models-x86_64-unknown-linux-gnu.json
+            dist/SHA256SUMS
