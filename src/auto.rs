@@ -19,13 +19,25 @@ fn color(level: Level) -> &'static str {
 
 pub fn run(launcher: Launcher, opts: RunOptions) -> ExitCode {
     let tty = std::io::stderr().is_terminal();
-    let (bold, reset) = if tty { ("\x1b[1m", "\x1b[0m") } else { ("", "") };
-    eprintln!("{bold}ngiab-rs auto mode{reset}  data={}  backend={}  jobs={}",
-        launcher.data_dir.display(), launcher.kind.name(), opts.jobs);
+    let (bold, reset) = if tty {
+        ("\x1b[1m", "\x1b[0m")
+    } else {
+        ("", "")
+    };
+    eprintln!(
+        "{bold}ngiab-rs auto mode{reset}  data={}  backend={}  jobs={}",
+        launcher.data_dir.display(),
+        launcher.kind.name(),
+        opts.jobs
+    );
 
     let pf = preflight::run(&launcher, opts.routing);
     for c in &pf.checks {
-        let (c0, c1) = if tty { (color(c.level), reset) } else { ("", "") };
+        let (c0, c1) = if tty {
+            (color(c.level), reset)
+        } else {
+            ("", "")
+        };
         eprintln!("  {c0}{}{c1} {:<18} {}", c.level.symbol(), c.name, c.detail);
     }
     if !pf.can_run() {
@@ -52,13 +64,22 @@ pub fn run(launcher: Launcher, opts: RunOptions) -> ExitCode {
     let total = Instant::now();
     let stdin_tty = std::io::stdin().is_terminal();
     for kind in steps {
-        let Some(spec) = plan::command_for(kind, &launcher, &opts, real, stdin_tty && tty) else { continue };
+        let Some(spec) = plan::command_for(kind, &launcher, &opts, real, stdin_tty && tty) else {
+            continue;
+        };
         eprintln!("\n{bold}▶ {}{reset}  {}", kind.label(), spec.display());
         let start = Instant::now();
-        let status = Command::new(&spec.program).args(&spec.args).current_dir(&launcher.data_dir).status();
+        let status = Command::new(&spec.program)
+            .args(&spec.args)
+            .current_dir(&launcher.data_dir)
+            .status();
         match status {
             Ok(s) if s.success() => {
-                eprintln!("{bold}✓ {}{reset} finished in {:.1}s", kind.label(), start.elapsed().as_secs_f64())
+                eprintln!(
+                    "{bold}✓ {}{reset} finished in {:.1}s",
+                    kind.label(),
+                    start.elapsed().as_secs_f64()
+                )
             }
             Ok(s) => {
                 eprintln!("✗ {} failed ({s})", kind.label());
@@ -70,7 +91,10 @@ pub fn run(launcher: Launcher, opts: RunOptions) -> ExitCode {
             }
         }
     }
-    eprintln!("\n{bold}Run completed in {:.1}s.{reset} Outputs are in {}/outputs",
-        total.elapsed().as_secs_f64(), launcher.data_dir.display());
+    eprintln!(
+        "\n{bold}Run completed in {:.1}s.{reset} Outputs are in {}/outputs",
+        total.elapsed().as_secs_f64(),
+        launcher.data_dir.display()
+    );
     ExitCode::SUCCESS
 }

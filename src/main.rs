@@ -31,7 +31,12 @@ struct Cli {
     auto: bool,
 
     /// Number of CPUs to use (bmi-driver -j / rs-route -n). Defaults to all CPUs.
-    #[arg(short = 'j', long = "jobs", visible_alias = "num-cpus", value_name = "N")]
+    #[arg(
+        short = 'j',
+        long = "jobs",
+        visible_alias = "num-cpus",
+        value_name = "N"
+    )]
     jobs: Option<usize>,
 
     /// Where to run the tools. Default: local binaries > docker > podman
@@ -39,7 +44,11 @@ struct Cli {
     backend: Option<BackendKind>,
 
     /// Container image used by the docker/podman backends
-    #[arg(long, env = "NGIAB_RS_IMAGE", default_value = "docker.io/joshcu/ngiab-rs:latest")]
+    #[arg(
+        long,
+        env = "NGIAB_RS_IMAGE",
+        default_value = "docker.io/joshcu/ngiab-rs:latest"
+    )]
     image: String,
 
     /// Only run bmi-driver (auto mode)
@@ -58,10 +67,15 @@ fn main() -> ExitCode {
     });
 
     if let Some(b) = cli.backend
-        && !detected.available(b) {
-            eprintln!("backend '{}' is not available: {}", b.name(), detected.summary(b));
-            return ExitCode::FAILURE;
-        }
+        && !detected.available(b)
+    {
+        eprintln!(
+            "backend '{}' is not available: {}",
+            b.name(),
+            detected.summary(b)
+        );
+        return ExitCode::FAILURE;
+    }
 
     if cli.auto {
         let Some(path) = path else {
@@ -83,23 +97,40 @@ fn main() -> ExitCode {
             eprintln!("No backend found: install bmi-driver + rs-route, docker, or podman.");
             return ExitCode::FAILURE;
         };
-        let launcher = Launcher { kind, image: cli.image, data_dir, detected };
+        let launcher = Launcher {
+            kind,
+            image: cli.image,
+            data_dir,
+            detected,
+        };
         let jobs = cli
             .jobs
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
             .max(1);
-        return auto::run(launcher, plan::RunOptions { jobs, routing: !cli.no_routing });
+        return auto::run(
+            launcher,
+            plan::RunOptions {
+                jobs,
+                routing: !cli.no_routing,
+            },
+        );
     }
 
     if !std::io::stdout().is_terminal() {
-        eprintln!("ngiab-rs needs a terminal for interactive mode (use -it with docker), or pass --auto.");
+        eprintln!(
+            "ngiab-rs needs a terminal for interactive mode (use -it with docker), or pass --auto."
+        );
         return ExitCode::FAILURE;
     }
 
     // SIGTERM/SIGHUP (terminal closed, `kill`) must still stop containers and restore
     // the terminal; SIGINT only arrives from outside since raw mode eats ctrl-c.
     let term = Arc::new(AtomicBool::new(false));
-    for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGHUP, signal_hook::consts::SIGINT] {
+    for sig in [
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGINT,
+    ] {
         let _ = signal_hook::flag::register(sig, Arc::clone(&term));
     }
 
@@ -123,7 +154,11 @@ fn run_tui(app: &mut App, term: &AtomicBool) -> anyhow::Result<()> {
             app.tick();
             terminal.draw(|f| ui::draw(f, app))?;
             // Faster refresh while a tool is producing output.
-            let timeout = if app.running() { Duration::from_millis(33) } else { Duration::from_millis(200) };
+            let timeout = if app.running() {
+                Duration::from_millis(33)
+            } else {
+                Duration::from_millis(200)
+            };
             if event::poll(timeout)? {
                 match event::read()? {
                     Event::Key(k) => app.on_key(k),
@@ -165,7 +200,10 @@ fn run_shell(app: &App) {
         return;
     };
     let spec = l.shell_command();
-    println!("\x1b[36mStarting a shell in {} - type `exit` to return to ngiab-rs.\x1b[0m", l.data_dir.display());
+    println!(
+        "\x1b[36mStarting a shell in {} - type `exit` to return to ngiab-rs.\x1b[0m",
+        l.data_dir.display()
+    );
     println!("\x1b[2m$ {}\x1b[0m", spec.display());
     let status = std::process::Command::new(&spec.program)
         .args(&spec.args)

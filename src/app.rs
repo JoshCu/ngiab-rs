@@ -19,9 +19,16 @@ pub enum Screen {
 }
 
 pub enum Popup {
-    Cleanup { files: usize, dirs: Vec<(PathBuf, usize)>, plan: Vec<StepKind> },
+    Cleanup {
+        files: usize,
+        dirs: Vec<(PathBuf, usize)>,
+        plan: Vec<StepKind>,
+    },
     ConfirmCancel,
-    Message { title: String, body: String },
+    Message {
+        title: String,
+        body: String,
+    },
     Help,
 }
 
@@ -218,7 +225,9 @@ impl App {
     fn submit_path(&mut self) {
         let raw = self.path_input.trim();
         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-            dirs::home_dir().map(|h| h.join(rest)).unwrap_or_else(|| raw.into())
+            dirs::home_dir()
+                .map(|h| h.join(rest))
+                .unwrap_or_else(|| raw.into())
         } else {
             PathBuf::from(raw)
         };
@@ -235,7 +244,9 @@ impl App {
                 self.refresh_preflight();
                 self.screen = Screen::Home;
             }
-            Ok(p) if !p.exists() => self.path_error = Some(format!("{} does not exist", p.display())),
+            Ok(p) if !p.exists() => {
+                self.path_error = Some(format!("{} does not exist", p.display()))
+            }
             Ok(p) => self.path_error = Some(format!("{} is not a directory", p.display())),
             Err(e) => self.path_error = Some(format!("{}: {e}", expanded.display())),
         }
@@ -249,13 +260,17 @@ impl App {
     }
 
     fn cycle_backend(&mut self) {
-        let avail: Vec<BackendKind> =
-            BackendKind::ALL.into_iter().filter(|k| self.detected.available(*k)).collect();
+        let avail: Vec<BackendKind> = BackendKind::ALL
+            .into_iter()
+            .filter(|k| self.detected.available(*k))
+            .collect();
         if avail.is_empty() {
             self.flash("no backends available");
             return;
         }
-        let pos = self.backend.and_then(|b| avail.iter().position(|k| *k == b));
+        let pos = self
+            .backend
+            .and_then(|b| avail.iter().position(|k| *k == b));
         let next = avail[pos.map_or(0, |p| (p + 1) % avail.len())];
         if Some(next) != self.backend {
             self.backend = Some(next);
@@ -268,9 +283,10 @@ impl App {
 
     fn activate(&mut self, item: MenuItem) {
         match item {
-            MenuItem::RunAll => {
-                self.request_run(vec![StepKind::Tool(Tool::BmiDriver), StepKind::Tool(Tool::RsRoute)])
-            }
+            MenuItem::RunAll => self.request_run(vec![
+                StepKind::Tool(Tool::BmiDriver),
+                StepKind::Tool(Tool::RsRoute),
+            ]),
             MenuItem::RunBmi => self.request_run(vec![StepKind::Tool(Tool::BmiDriver)]),
             MenuItem::RunRoute => self.request_run(vec![StepKind::Tool(Tool::RsRoute)]),
             MenuItem::Evaluate => self.open_eval(),
@@ -292,7 +308,9 @@ impl App {
         let Some(pf) = &self.preflight else {
             self.popup = Some(Popup::Message {
                 title: "Cannot run".into(),
-                body: "No backend available. Install bmi-driver/rs-route locally, or docker/podman.".into(),
+                body:
+                    "No backend available. Install bmi-driver/rs-route locally, or docker/podman."
+                        .into(),
             });
             return;
         };
@@ -312,14 +330,20 @@ impl App {
         let runs_bmi = plan.contains(&StepKind::Tool(Tool::BmiDriver));
         let files = pf.existing_output_files();
         if runs_bmi && files > 0 {
-            self.popup = Some(Popup::Cleanup { files, dirs: pf.existing_outputs.clone(), plan });
+            self.popup = Some(Popup::Cleanup {
+                files,
+                dirs: pf.existing_outputs.clone(),
+                plan,
+            });
         } else {
             self.begin_run(plan);
         }
     }
 
     fn begin_run(&mut self, plan: Vec<StepKind>) {
-        let Some(launcher) = self.launcher() else { return };
+        let Some(launcher) = self.launcher() else {
+            return;
+        };
         // Never hold output files open while tools rewrite them.
         self.eval = None;
         let real = self.realization().cloned();
@@ -340,7 +364,9 @@ impl App {
                     StepKind::Tool(Tool::RsRoute) => {
                         if real.as_ref().is_some_and(|r| !r.is_csv()) {
                             Some("needs csv catchment output".to_string())
-                        } else if launcher.kind == BackendKind::Local && self.detected.rs_route.is_none() {
+                        } else if launcher.kind == BackendKind::Local
+                            && self.detected.rs_route.is_none()
+                        {
                             Some("rs-route not found".to_string())
                         } else {
                             None
@@ -367,7 +393,10 @@ impl App {
             finished: false,
             started: Instant::now(),
             elapsed: None,
-            opts: RunOptions { jobs: self.jobs, routing: true },
+            opts: RunOptions {
+                jobs: self.jobs,
+                routing: true,
+            },
             real,
         });
         self.screen = Screen::Run;
@@ -376,7 +405,9 @@ impl App {
 
     /// Start the next pending step, or mark the run finished.
     fn advance(&mut self) {
-        let Some(launcher) = self.launcher() else { return };
+        let Some(launcher) = self.launcher() else {
+            return;
+        };
         let pane = self.pane;
         let Some(run) = self.run.as_mut() else { return };
         while run.current < run.steps.len() {
@@ -385,7 +416,8 @@ impl App {
                 run.current += 1;
                 continue;
             }
-            let Some(spec) = plan::command_for(step.kind, &launcher, &run.opts, run.real.as_ref(), true)
+            let Some(spec) =
+                plan::command_for(step.kind, &launcher, &run.opts, run.real.as_ref(), true)
             else {
                 step.status = StepStatus::Skipped("not applicable".into());
                 run.current += 1;
@@ -428,7 +460,11 @@ impl App {
             run.finished = true;
             run.elapsed = Some(run.started.elapsed());
             let ok = run.succeeded();
-            self.flash(if ok { "run finished ✓  (e: evaluate)" } else { "run did not complete" });
+            self.flash(if ok {
+                "run finished ✓  (e: evaluate)"
+            } else {
+                "run did not complete"
+            });
         }
         // Outputs changed: refresh counts and any open evaluation.
         self.refresh_preflight();
@@ -460,9 +496,10 @@ impl App {
     /// Called every loop iteration: pump PTY output, detect step completion.
     pub fn tick(&mut self) {
         if let Some((_, t)) = &self.status
-            && t.elapsed() > Duration::from_secs(5) {
-                self.status = None;
-            }
+            && t.elapsed() > Duration::from_secs(5)
+        {
+            self.status = None;
+        }
         let pane = self.pane;
         let Some(run) = self.run.as_mut() else { return };
         for s in run.steps.iter_mut() {
@@ -473,8 +510,12 @@ impl App {
         if run.finished {
             return;
         }
-        let Some(step) = run.steps.get_mut(run.current) else { return };
-        let Some(proc) = step.proc.as_mut() else { return };
+        let Some(step) = run.steps.get_mut(run.current) else {
+            return;
+        };
+        let Some(proc) = step.proc.as_mut() else {
+            return;
+        };
         if proc.poll() {
             let live = proc.live_contents();
             if let Some(p) = parse_progress(&live) {
@@ -501,7 +542,9 @@ impl App {
     }
 
     fn open_eval(&mut self) {
-        let Some(data) = self.data_dir.clone() else { return };
+        let Some(data) = self.data_dir.clone() else {
+            return;
+        };
         let cat_dir = self
             .preflight
             .as_ref()
@@ -544,7 +587,9 @@ impl App {
     }
 
     fn on_popup_key(&mut self, key: KeyEvent) {
-        let Some(popup) = self.popup.take() else { return };
+        let Some(popup) = self.popup.take() else {
+            return;
+        };
         match popup {
             Popup::Cleanup { dirs, plan, files } => match key.code {
                 KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -604,11 +649,15 @@ impl App {
             None => ("./".to_string(), input.clone()),
         };
         let lookup = if let Some(rest) = dir.strip_prefix("~/") {
-            dirs::home_dir().map(|h| h.join(rest)).unwrap_or_else(|| dir.clone().into())
+            dirs::home_dir()
+                .map(|h| h.join(rest))
+                .unwrap_or_else(|| dir.clone().into())
         } else {
             PathBuf::from(&dir)
         };
-        let Ok(rd) = std::fs::read_dir(&lookup) else { return };
+        let Ok(rd) = std::fs::read_dir(&lookup) else {
+            return;
+        };
         let mut matches: Vec<String> = rd
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_ok_and(|t| t.is_dir() || t.is_symlink()))
@@ -616,16 +665,33 @@ impl App {
             .filter(|n| n.starts_with(&prefix) && (!n.starts_with('.') || prefix.starts_with('.')))
             .collect();
         matches.sort();
-        let Some(first) = matches.first().cloned() else { return };
+        let Some(first) = matches.first().cloned() else {
+            return;
+        };
         let common = matches.iter().fold(first.clone(), |acc, m| {
-            acc.chars().zip(m.chars()).take_while(|(a, b)| a == b).map(|(a, _)| a).collect()
+            acc.chars()
+                .zip(m.chars())
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| a)
+                .collect()
         });
-        let base = if input.contains('/') { dir } else { String::new() };
+        let base = if input.contains('/') {
+            dir
+        } else {
+            String::new()
+        };
         self.path_input = format!("{base}{common}");
         if matches.len() == 1 {
             self.path_input.push('/');
         } else {
-            self.flash(matches.iter().take(8).cloned().collect::<Vec<_>>().join("  "));
+            self.flash(
+                matches
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("  "),
+            );
         }
     }
 
@@ -703,10 +769,11 @@ impl App {
             _ => None,
         };
         if let (Some(b), Some(step)) = (bytes, run.steps.get_mut(run.current))
-            && let Some(p) = step.proc.as_mut() {
-                p.scroll(-(p.scrollback() as isize));
-                p.write(&b);
-            }
+            && let Some(p) = step.proc.as_mut()
+        {
+            p.scroll(-(p.scrollback() as isize));
+            p.write(&b);
+        }
     }
 
     fn on_eval_key(&mut self, key: KeyEvent) {

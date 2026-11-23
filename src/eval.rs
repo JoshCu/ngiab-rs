@@ -25,7 +25,11 @@ pub struct Stats {
 
 impl Series {
     pub fn stats(&self) -> Option<Stats> {
-        let mut s = Stats { min: f64::INFINITY, max: f64::NEG_INFINITY, ..Default::default() };
+        let mut s = Stats {
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+            ..Default::default()
+        };
         let mut sum = 0.0;
         for (&t, &y) in self.t.iter().zip(&self.y) {
             if !y.is_finite() {
@@ -93,7 +97,12 @@ pub fn fmt_time(t: i64) -> String {
 
 fn parse_dt(s: &str) -> Option<NaiveDateTime> {
     let s = s.trim();
-    for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d_%H:%M:%S", "%Y-%m-%d %H:%M"] {
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d_%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ] {
         if let Ok(d) = NaiveDateTime::parse_from_str(s, fmt) {
             return Some(d);
         }
@@ -129,7 +138,9 @@ fn str_attr(var: &netcdf::Variable, name: &str) -> Option<String> {
 impl TrouteFile {
     pub fn open(path: &Path) -> Result<Self> {
         let file = netcdf::open(path).with_context(|| format!("opening {}", path.display()))?;
-        let fid = file.variable("feature_id").context("no feature_id variable")?;
+        let fid = file
+            .variable("feature_id")
+            .context("no feature_id variable")?;
         let feature_ids: Vec<i64> = fid.get_values::<i64, _>(..)?;
         let tvar = file.variable("time").context("no time variable")?;
         let raw: Vec<f64> = tvar.get_values::<f64, _>(..)?;
@@ -149,26 +160,42 @@ impl TrouteFile {
             }
             None => (1.0, 0),
         };
-        let times = raw.iter().map(|v| base + (v * scale).round() as i64).collect();
+        let times = raw
+            .iter()
+            .map(|v| base + (v * scale).round() as i64)
+            .collect();
         let vars = ROUTE_VARS
             .iter()
             .filter(|v| file.variable(v).is_some())
             .map(|v| v.to_string())
             .collect();
-        Ok(Self { path: path.to_path_buf(), feature_ids, times, vars })
+        Ok(Self {
+            path: path.to_path_buf(),
+            feature_ids,
+            times,
+            vars,
+        })
     }
 
     pub fn series(&self, feature_idx: usize, var: &str) -> Result<Series> {
-        let file = netcdf::open(&self.path)
-            .with_context(|| format!("opening {}", self.path.display()))?;
-        let v = file.variable(var).with_context(|| format!("no variable {var}"))?;
+        let file =
+            netcdf::open(&self.path).with_context(|| format!("opening {}", self.path.display()))?;
+        let v = file
+            .variable(var)
+            .with_context(|| format!("no variable {var}"))?;
         let units = str_attr(&v, "units").unwrap_or_default();
         let fill = v.fill_value::<f32>().ok().flatten().unwrap_or(-9999.0);
         let ext: [netcdf::Extent; 2] = [feature_idx.into(), (..).into()];
         let vals: Vec<f32> = v.get_values::<f32, _>(ext)?;
         let y = vals
             .into_iter()
-            .map(|x| if x == fill || x <= -9999.0 { f64::NAN } else { x as f64 })
+            .map(|x| {
+                if x == fill || x <= -9999.0 {
+                    f64::NAN
+                } else {
+                    x as f64
+                }
+            })
             .collect();
         Ok(Series {
             title: format!("wb-{} {var}", self.feature_ids[feature_idx]),
@@ -212,8 +239,12 @@ impl CatCsv {
         let headers = rdr.headers()?.clone();
         let time_col = headers.iter().position(|h| h.eq_ignore_ascii_case("time"));
         let skip = |i: usize, h: &str| Some(i) == time_col || h.eq_ignore_ascii_case("time step");
-        let value_cols: Vec<usize> =
-            headers.iter().enumerate().filter(|(i, h)| !skip(*i, h)).map(|(i, _)| i).collect();
+        let value_cols: Vec<usize> = headers
+            .iter()
+            .enumerate()
+            .filter(|(i, h)| !skip(*i, h))
+            .map(|(i, _)| i)
+            .collect();
         let columns = value_cols.iter().map(|&i| headers[i].to_string()).collect();
         let mut times = Vec::new();
         let mut data = vec![Vec::new(); value_cols.len()];
@@ -229,8 +260,17 @@ impl CatCsv {
                 data[k].push(rec.get(c).and_then(|s| s.parse().ok()).unwrap_or(f64::NAN));
             }
         }
-        let id = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-        Ok(Self { id, columns, times, data })
+        let id = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        Ok(Self {
+            id,
+            columns,
+            times,
+            data,
+        })
     }
 
     pub fn series(&self, col: usize) -> Option<Series> {
@@ -259,7 +299,11 @@ pub fn list_catchments(dir: &Path) -> Vec<(String, PathBuf)> {
         .unwrap_or_default();
     let key = |s: &str| {
         let (pre, num) = s.split_once('-').unwrap_or((s, ""));
-        (pre.to_string(), num.parse::<u64>().unwrap_or(u64::MAX), s.to_string())
+        (
+            pre.to_string(),
+            num.parse::<u64>().unwrap_or(u64::MAX),
+            s.to_string(),
+        )
     };
     v.sort_by_cached_key(|(id, _)| key(id));
     v
@@ -371,8 +415,14 @@ impl EvalState {
 
     pub fn current_var(&self) -> Option<String> {
         match self.tab {
-            Tab::Hydrograph => self.troute.as_ref().and_then(|f| f.vars.get(self.var_idx).cloned()),
-            Tab::Catchment => self.csv.as_ref().and_then(|c| c.columns.get(self.col_idx).cloned()),
+            Tab::Hydrograph => self
+                .troute
+                .as_ref()
+                .and_then(|f| f.vars.get(self.var_idx).cloned()),
+            Tab::Catchment => self
+                .csv
+                .as_ref()
+                .and_then(|c| c.columns.get(self.col_idx).cloned()),
         }
     }
 
@@ -382,7 +432,16 @@ impl EvalState {
             self.loaded_key = None;
             return;
         };
-        let key = (self.tab, self.nc_idx, item, if self.tab == Tab::Hydrograph { self.var_idx } else { self.col_idx });
+        let key = (
+            self.tab,
+            self.nc_idx,
+            item,
+            if self.tab == Tab::Hydrograph {
+                self.var_idx
+            } else {
+                self.col_idx
+            },
+        );
         if self.loaded_key == Some(key) {
             return;
         }
@@ -396,7 +455,10 @@ impl EvalState {
             },
             Tab::Catchment => {
                 let (_, path) = &self.cats[item];
-                let need_load = self.csv.as_ref().is_none_or(|c| Some(&c.id) != Some(&self.cats[item].0));
+                let need_load = self
+                    .csv
+                    .as_ref()
+                    .is_none_or(|c| Some(&c.id) != Some(&self.cats[item].0));
                 if need_load {
                     match CatCsv::load(path) {
                         Ok(c) => {
@@ -429,7 +491,11 @@ impl EvalState {
             }
         }
         // Recompute the key: loading a csv may have clamped col_idx.
-        let var = if self.tab == Tab::Hydrograph { self.var_idx } else { self.col_idx };
+        let var = if self.tab == Tab::Hydrograph {
+            self.var_idx
+        } else {
+            self.col_idx
+        };
         self.loaded_key = Some((self.tab, self.nc_idx, item, var));
     }
 
@@ -502,7 +568,11 @@ mod tests {
         let mut y: Vec<f64> = vec![1.0; 10_000];
         y[5123] = 100.0;
         y[777] = -5.0;
-        let s = Series { t, y, ..Default::default() };
+        let s = Series {
+            t,
+            y,
+            ..Default::default()
+        };
         let d = s.decimated(100);
         assert!(d.len() <= 200);
         assert!(d.iter().any(|p| p.1 == 100.0));
@@ -522,7 +592,10 @@ mod tests {
         std::fs::write(d.join("cat-9.csv"), "Time Step,Time,Q_OUT\n").unwrap();
         std::fs::write(d.join("other.csv"), "x").unwrap();
         let l = list_catchments(&d);
-        assert_eq!(l.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["cat-9", "cat-10"]);
+        assert_eq!(
+            l.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(),
+            ["cat-9", "cat-10"]
+        );
         let c = CatCsv::load(&d.join("cat-10.csv")).unwrap();
         assert_eq!(c.columns, ["Q_OUT", "SOIL"]);
         assert_eq!(c.times[1] - c.times[0], 3600);

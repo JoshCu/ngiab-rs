@@ -16,7 +16,8 @@ pub enum BackendKind {
 }
 
 impl BackendKind {
-    pub const ALL: [BackendKind; 3] = [BackendKind::Local, BackendKind::Docker, BackendKind::Podman];
+    pub const ALL: [BackendKind; 3] =
+        [BackendKind::Local, BackendKind::Docker, BackendKind::Podman];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -79,7 +80,13 @@ impl Detected {
         } else {
             (probe_runtime("docker"), probe_runtime("podman"))
         };
-        Self { bmi_driver, rs_route, docker, podman, in_container }
+        Self {
+            bmi_driver,
+            rs_route,
+            docker,
+            podman,
+            in_container,
+        }
     }
 
     pub fn runtime(&self, kind: BackendKind) -> Option<&RuntimeInfo> {
@@ -113,8 +120,14 @@ impl Detected {
     pub fn summary(&self, kind: BackendKind) -> String {
         match kind {
             BackendKind::Local => {
-                let b = self.bmi_driver.as_ref().map_or("missing".into(), |p| p.display().to_string());
-                let r = self.rs_route.as_ref().map_or("missing".into(), |p| p.display().to_string());
+                let b = self
+                    .bmi_driver
+                    .as_ref()
+                    .map_or("missing".into(), |p| p.display().to_string());
+                let r = self
+                    .rs_route
+                    .as_ref()
+                    .map_or("missing".into(), |p| p.display().to_string());
                 format!("bmi-driver: {b}, rs-route: {r}")
             }
             _ => match self.runtime(kind) {
@@ -180,7 +193,13 @@ impl Launcher {
 
     /// Build the command for `tool` with `tool_args` (which should already use
     /// `data_root()` for any paths). `tty` adds `-t` for container runs.
-    pub fn tool_command(&self, tool: Tool, tool_args: Vec<String>, tty: bool, tag: &str) -> CommandSpec {
+    pub fn tool_command(
+        &self,
+        tool: Tool,
+        tool_args: Vec<String>,
+        tty: bool,
+        tag: &str,
+    ) -> CommandSpec {
         match self.kind {
             BackendKind::Local => CommandSpec {
                 program: self
@@ -210,7 +229,11 @@ impl Launcher {
                     self.image.clone(),
                 ]);
                 args.extend(tool_args);
-                CommandSpec { program: runtime.clone(), args, container: Some((runtime, name)) }
+                CommandSpec {
+                    program: runtime.clone(),
+                    args,
+                    container: Some((runtime, name)),
+                }
             }
         }
     }
@@ -236,12 +259,27 @@ impl Launcher {
                 "/bin/bash".into(),
                 self.image.clone(),
             ]);
-            CommandSpec { program: self.kind.name().into(), args, container: None }
+            CommandSpec {
+                program: self.kind.name().into(),
+                args,
+                container: None,
+            }
         } else {
-            let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-                if Path::new("/bin/bash").exists() { "/bin/bash".into() } else { "/bin/sh".into() }
-            });
-            CommandSpec { program: shell, args: vec![], container: None }
+            let shell = std::env::var("SHELL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if Path::new("/bin/bash").exists() {
+                        "/bin/bash".into()
+                    } else {
+                        "/bin/sh".into()
+                    }
+                });
+            CommandSpec {
+                program: shell,
+                args: vec![],
+                container: None,
+            }
         }
     }
 
@@ -255,7 +293,10 @@ impl Launcher {
         } else {
             format!("source={src}")
         };
-        let mut v = vec!["--mount".into(), format!("type=bind,{src},target={CONTAINER_DATA}")];
+        let mut v = vec![
+            "--mount".into(),
+            format!("type=bind,{src},target={CONTAINER_DATA}"),
+        ];
         if selinux_enforcing() {
             v.extend(["--security-opt".into(), "label=disable".into()]);
         }
@@ -269,7 +310,12 @@ impl Launcher {
         if self.kind == BackendKind::Docker && !rootless {
             // SAFETY: getuid/getgid are always successful and have no side effects.
             let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-            vec!["--user".into(), format!("{uid}:{gid}"), "-e".into(), "HOME=/tmp".into()]
+            vec![
+                "--user".into(),
+                format!("{uid}:{gid}"),
+                "-e".into(),
+                "HOME=/tmp".into(),
+            ]
         } else {
             vec![]
         }
@@ -324,11 +370,20 @@ fn probe_runtime(bin: &str) -> Option<RuntimeInfo> {
             } else {
                 text.contains("rootless")
             };
-            Some(RuntimeInfo { version, usable: true, rootless, note: None })
+            Some(RuntimeInfo {
+                version,
+                usable: true,
+                rootless,
+                note: None,
+            })
         }
         Some(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
-            let note = err.lines().find(|l| !l.trim().is_empty()).unwrap_or("not usable").trim();
+            let note = err
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("not usable")
+                .trim();
             Some(RuntimeInfo {
                 version,
                 usable: false,
@@ -367,9 +422,11 @@ pub fn find_executable(names: &[&str]) -> Option<PathBuf> {
         for d in &dirs {
             let p = d.join(name);
             if let Ok(m) = p.metadata()
-                && m.is_file() && m.permissions().mode() & 0o111 != 0 {
-                    return Some(p);
-                }
+                && m.is_file()
+                && m.permissions().mode() & 0o111 != 0
+            {
+                return Some(p);
+            }
         }
     }
     None
@@ -408,7 +465,12 @@ mod tests {
             data_dir: "/home/me/run 1".into(),
             detected: Detected {
                 bmi_driver: Some("/opt/bin/bmi-driver".into()),
-                docker: Some(RuntimeInfo { version: "1".into(), usable: true, rootless: true, note: None }),
+                docker: Some(RuntimeInfo {
+                    version: "1".into(),
+                    usable: true,
+                    rootless: true,
+                    note: None,
+                }),
                 ..Default::default()
             },
         }
@@ -418,7 +480,12 @@ mod tests {
     fn local_command() {
         let l = launcher(BackendKind::Local);
         assert_eq!(l.data_root(), "/home/me/run 1");
-        let c = l.tool_command(Tool::BmiDriver, vec![l.data_root(), "-j".into(), "4".into()], true, "x");
+        let c = l.tool_command(
+            Tool::BmiDriver,
+            vec![l.data_root(), "-j".into(), "4".into()],
+            true,
+            "x",
+        );
         assert_eq!(c.program, "/opt/bin/bmi-driver");
         assert_eq!(c.args, vec!["/home/me/run 1", "-j", "4"]);
         assert!(c.container.is_none());
@@ -432,7 +499,9 @@ mod tests {
         let joined = c.args.join(" ");
         assert!(joined.contains("--mount type=bind,source=/home/me/run 1,target=/data"));
         assert!(c.args.contains(&"--init".to_string()));
-        assert!(joined.contains("--entrypoint /usr/local/bin/rs-route docker.io/joshcu/ngiab-rs:latest /data"));
+        assert!(joined.contains(
+            "--entrypoint /usr/local/bin/rs-route docker.io/joshcu/ngiab-rs:latest /data"
+        ));
         assert!(c.args.contains(&"-t".to_string()));
         // rootless docker -> no --user mapping
         assert!(!c.args.contains(&"--user".to_string()));
@@ -443,9 +512,19 @@ mod tests {
     fn default_preference() {
         let mut d = Detected::default();
         assert_eq!(d.default_kind(), None);
-        d.podman = Some(RuntimeInfo { version: "5".into(), usable: true, rootless: true, note: None });
+        d.podman = Some(RuntimeInfo {
+            version: "5".into(),
+            usable: true,
+            rootless: true,
+            note: None,
+        });
         assert_eq!(d.default_kind(), Some(BackendKind::Podman));
-        d.docker = Some(RuntimeInfo { version: "27".into(), usable: true, rootless: false, note: None });
+        d.docker = Some(RuntimeInfo {
+            version: "27".into(),
+            usable: true,
+            rootless: false,
+            note: None,
+        });
         assert_eq!(d.default_kind(), Some(BackendKind::Docker));
         d.bmi_driver = Some("/x".into());
         assert_eq!(d.default_kind(), Some(BackendKind::Local));

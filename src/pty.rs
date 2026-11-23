@@ -38,7 +38,12 @@ impl PtyProcess {
         let (rows, cols) = (rows.max(2), cols.max(10));
         let pty = native_pty_system();
         let pair = pty
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("opening pty")?;
         let mut cmd = CommandBuilder::new(&spec.program);
         cmd.args(&spec.args);
@@ -109,11 +114,12 @@ impl PtyProcess {
             }
         }
         if self.exit.is_none()
-            && let Ok(Some(status)) = self.child.try_wait() {
-                self.exit = Some(status);
-                self.exited_at = Some(Instant::now());
-                changed = true;
-            }
+            && let Ok(Some(status)) = self.child.try_wait()
+        {
+            self.exit = Some(status);
+            self.exited_at = Some(Instant::now());
+            changed = true;
+        }
         changed
     }
 
@@ -122,7 +128,9 @@ impl PtyProcess {
     pub fn finished(&self) -> Option<&portable_pty::ExitStatus> {
         let exit = self.exit.as_ref()?;
         let drained = self.reader_done
-            || self.exited_at.is_some_and(|t| t.elapsed() > Duration::from_millis(750));
+            || self
+                .exited_at
+                .is_some_and(|t| t.elapsed() > Duration::from_millis(750));
         drained.then_some(exit)
     }
 
@@ -132,7 +140,12 @@ impl PtyProcess {
             return;
         }
         self.size = (rows, cols);
-        let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
         self.parser.screen_mut().set_size(nz(rows), nz(cols));
     }
 
@@ -277,7 +290,9 @@ impl Widget for TermView<'_> {
         let cols = cols.get().min(area.width);
         for r in 0..rows {
             for c in 0..cols {
-                let Some(cell) = self.screen.cell(r, c) else { continue };
+                let Some(cell) = self.screen.cell(r, c) else {
+                    continue;
+                };
                 if cell.is_wide_continuation() {
                     continue;
                 }
@@ -305,7 +320,11 @@ impl Widget for TermView<'_> {
                     m |= Modifier::REVERSED;
                 }
                 style = style.add_modifier(m);
-                let sym = if cell.has_contents() { cell.contents() } else { " " };
+                let sym = if cell.has_contents() {
+                    cell.contents()
+                } else {
+                    " "
+                };
                 if let Some(target) = buf.cell_mut((area.x + c, area.y + r)) {
                     target.set_symbol(sym).set_style(style);
                 }
@@ -332,13 +351,18 @@ mod tests {
 
     #[test]
     fn ignores_paths_and_dates() {
-        assert_eq!(parse_progress("reading /data/outputs/1/2.csv 2010-01-01"), None);
+        assert_eq!(
+            parse_progress("reading /data/outputs/1/2.csv 2010-01-01"),
+            None
+        );
         assert_eq!(parse_progress("cpu 1/0"), None);
     }
 
     #[test]
     fn prompt_detection() {
-        assert!(awaiting_answer("Add these mappings to realization.json? [y/N]\n\n"));
+        assert!(awaiting_answer(
+            "Add these mappings to realization.json? [y/N]\n\n"
+        ));
         assert!(!awaiting_answer("running"));
     }
 
@@ -346,7 +370,10 @@ mod tests {
     fn poll_is_bounded_under_flood() {
         let spec = CommandSpec {
             program: "sh".into(),
-            args: vec!["-c".into(), "yes 'Musk Cunge WARNING: Failure to converge on node 12345 timestep 99'".into()],
+            args: vec![
+                "-c".into(),
+                "yes 'Musk Cunge WARNING: Failure to converge on node 12345 timestep 99'".into(),
+            ],
             container: None,
         };
         let mut p = PtyProcess::spawn(spec, Path::new("/"), 40, 150).unwrap();
@@ -354,7 +381,11 @@ mod tests {
         for _ in 0..5 {
             let t = Instant::now();
             p.poll();
-            assert!(t.elapsed() < Duration::from_millis(250), "poll took {:?}", t.elapsed());
+            assert!(
+                t.elapsed() < Duration::from_millis(250),
+                "poll took {:?}",
+                t.elapsed()
+            );
         }
         p.kill();
     }

@@ -44,7 +44,11 @@ pub struct Preflight {
 
 impl Preflight {
     pub fn worst(&self) -> Level {
-        self.checks.iter().map(|c| c.level).max().unwrap_or(Level::Ok)
+        self.checks
+            .iter()
+            .map(|c| c.level)
+            .max()
+            .unwrap_or(Level::Ok)
     }
 
     pub fn can_run(&self) -> bool {
@@ -69,7 +73,11 @@ impl Preflight {
     }
 
     fn push(&mut self, level: Level, name: &str, detail: impl Into<String>) {
-        self.checks.push(Check { level, name: name.into(), detail: detail.into() });
+        self.checks.push(Check {
+            level,
+            name: name.into(),
+            detail: detail.into(),
+        });
     }
 }
 
@@ -114,18 +122,30 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
 
     // --- data folder layout -------------------------------------------------
     if !data.is_dir() {
-        pf.push(Level::Fail, "data folder", format!("{} does not exist", data.display()));
+        pf.push(
+            Level::Fail,
+            "data folder",
+            format!("{} does not exist", data.display()),
+        );
         return pf;
     }
     pf.push(Level::Ok, "data folder", data.display().to_string());
 
     let config_dir = data.join("config");
     if !config_dir.is_dir() {
-        pf.push(Level::Fail, "config/", "missing (needs realization.json and a .gpkg)");
+        pf.push(
+            Level::Fail,
+            "config/",
+            "missing (needs realization.json and a .gpkg)",
+        );
     }
     match count_files(&data.join("forcings"), 1) {
         Some(n) => pf.push(Level::Ok, "forcings/", format!("{n} files")),
-        None => pf.push(Level::Warn, "forcings/", "missing - forcing path must point elsewhere"),
+        None => pf.push(
+            Level::Warn,
+            "forcings/",
+            "missing - forcing path must point elsewhere",
+        ),
     }
     if data.join("outputs").is_dir() {
         pf.push(Level::Ok, "outputs/", "present");
@@ -140,7 +160,10 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
             pf.push(
                 Level::Ok,
                 "realization",
-                format!("{} → {} every {}s", r.start_time, r.end_time, r.output_interval),
+                format!(
+                    "{} → {} every {}s",
+                    r.start_time, r.end_time, r.output_interval
+                ),
             );
             let models: Vec<_> = r.modules.iter().map(|m| m.name.as_str()).collect();
             pf.push(Level::Info, "models", models.join(" → "));
@@ -164,7 +187,10 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
                 None => pf.push(
                     Level::Fail,
                     "output_root",
-                    format!("{} is outside /data, outputs would be lost when the container exits", r.output_root),
+                    format!(
+                        "{} is outside /data, outputs would be lost when the container exits",
+                        r.output_root
+                    ),
                 ),
             }
             pf.realization = Some(r);
@@ -185,14 +211,21 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
     match gpkgs.as_slice() {
         [] => pf.push(Level::Fail, "hydrofabric", "no .gpkg in config/"),
         [g, rest @ ..] => {
-            let name = g.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = g
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if rest.is_empty() {
                 pf.push(Level::Ok, "hydrofabric", name);
             } else {
                 pf.push(
                     Level::Warn,
                     "hydrofabric",
-                    format!("{} .gpkg files in config/, tools will use {name}", gpkgs.len()),
+                    format!(
+                        "{} .gpkg files in config/, tools will use {name}",
+                        gpkgs.len()
+                    ),
                 );
             }
             match read_divides(g) {
@@ -201,7 +234,11 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
                     pf.divides = Some(n);
                     first_divide = first;
                 }
-                Err(e) => pf.push(Level::Fail, "catchments", format!("cannot read divides: {e}")),
+                Err(e) => pf.push(
+                    Level::Fail,
+                    "catchments",
+                    format!("cannot read divides: {e}"),
+                ),
             }
             pf.gpkg = Some(g.clone());
         }
@@ -211,7 +248,11 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
     if let Some(r) = pf.realization.clone() {
         if let Some(fp) = &r.forcing_path {
             if fp.contains("{{") {
-                pf.push(Level::Info, "forcing", format!("{fp} (templated, not checked)"));
+                pf.push(
+                    Level::Info,
+                    "forcing",
+                    format!("{fp} (templated, not checked)"),
+                );
             } else if let Some(hp) = host_path(data, fp, kind) {
                 if hp.exists() {
                     pf.push(Level::Ok, "forcing", fp.clone());
@@ -230,27 +271,33 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
                     continue;
                 }
                 if let Some(hp) = host_path(data, &p, kind)
-                    && !hp.exists() {
-                        pf.push(
-                            Level::Fail,
-                            &format!("{} config", m.name),
-                            format!("{p} not found"),
-                        );
-                    }
+                    && !hp.exists()
+                {
+                    pf.push(
+                        Level::Fail,
+                        &format!("{} config", m.name),
+                        format!("{p} not found"),
+                    );
+                }
             }
             // Library paths refer to the image when running in a container.
             if kind == BackendKind::Local
                 && let Some(lib) = &m.library_file
-                    && !Path::new(lib).exists() {
-                        pf.push(
-                            Level::Warn,
-                            &format!("{} library", m.name),
-                            format!("{lib} not found on this machine"),
-                        );
-                    }
+                && !Path::new(lib).exists()
+            {
+                pf.push(
+                    Level::Warn,
+                    &format!("{} library", m.name),
+                    format!("{lib} not found on this machine"),
+                );
+            }
         }
         if routing && !r.is_csv() {
-            pf.push(Level::Warn, "routing", "will be skipped: needs csv catchment output");
+            pf.push(
+                Level::Warn,
+                "routing",
+                "will be skipped: needs csv catchment output",
+            );
         }
     }
 
@@ -264,7 +311,9 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
             }
             match &det.rs_route {
                 Some(p) => pf.push(Level::Ok, "rs-route", p.display().to_string()),
-                None if routing => pf.push(Level::Warn, "rs-route", "not found - routing unavailable"),
+                None if routing => {
+                    pf.push(Level::Warn, "rs-route", "not found - routing unavailable")
+                }
                 None => pf.push(Level::Info, "rs-route", "not found"),
             }
         }
@@ -290,20 +339,26 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
     // --- existing outputs ---------------------------------------------------
     for dir in pf.output_dirs(data) {
         if let Some(n) = count_files(&dir, usize::MAX)
-            && n > 0 {
-                pf.existing_outputs.push((dir, n));
-            }
+            && n > 0
+        {
+            pf.existing_outputs.push((dir, n));
+        }
     }
     let n = pf.existing_output_files();
     if n > 0 {
-        pf.push(Level::Info, "existing outputs", format!("{n} files from a previous run"));
+        pf.push(
+            Level::Info,
+            "existing outputs",
+            format!("{n} files from a previous run"),
+        );
     }
 
     pf
 }
 
 fn read_divides(gpkg: &Path) -> rusqlite::Result<(usize, Option<String>)> {
-    let conn = rusqlite::Connection::open_with_flags(gpkg, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn =
+        rusqlite::Connection::open_with_flags(gpkg, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let n: i64 = conn.query_row("SELECT COUNT(*) FROM divides", [], |r| r.get(0))?;
     let first: Option<String> = conn
         .query_row("SELECT divide_id FROM divides LIMIT 1", [], |r| r.get(0))
@@ -319,7 +374,9 @@ pub fn count_files(dir: &Path, max_depth: usize) -> Option<usize> {
     let mut n = 0;
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     while let Some((d, depth)) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
@@ -386,7 +443,10 @@ mod tests {
         // component-wise prefix: /database is not /data
         assert!(host_path(d, "/database/x", BackendKind::Docker).is_none());
         // local runs take absolute paths literally
-        assert_eq!(host_path(d, "/data/x", BackendKind::Local).unwrap(), PathBuf::from("/data/x"));
+        assert_eq!(
+            host_path(d, "/data/x", BackendKind::Local).unwrap(),
+            PathBuf::from("/data/x")
+        );
     }
 
     #[test]

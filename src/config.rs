@@ -32,8 +32,8 @@ pub struct Realization {
 
 impl Realization {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let v: Value =
             serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
 
@@ -90,7 +90,9 @@ impl Realization {
 fn module_from(p: &Value) -> Module {
     let s = |k: &str| p[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
     Module {
-        name: s("model_type_name").or_else(|| s("name")).unwrap_or_else(|| "?".into()),
+        name: s("model_type_name")
+            .or_else(|| s("name"))
+            .unwrap_or_else(|| "?".into()),
         library_file: s("library_file"),
         init_config: s("init_config"),
     }

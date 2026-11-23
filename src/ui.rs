@@ -65,13 +65,19 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(ACCENT))
         .title(Line::from(" NGIAB-RS ").bold().fg(ACCENT))
-        .title(Line::from(" NextGen In A Box · Rust ").right_aligned().fg(DIM));
+        .title(
+            Line::from(" NextGen In A Box · Rust ")
+                .right_aligned()
+                .fg(DIM),
+        );
     let data = app
         .data_dir
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "-".into());
-    let backend = app.backend.map_or("none".to_string(), |b| b.name().to_string());
+    let backend = app
+        .backend
+        .map_or("none".to_string(), |b| b.name().to_string());
     let mut spans = vec![
         Span::raw(" data ").fg(DIM),
         Span::raw(data).bold(),
@@ -92,7 +98,12 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let keys: &[(&str, &str)] = match app.screen {
-        Screen::PathInput => &[("enter", "select"), ("tab", "complete"), ("ctrl-u", "clear"), ("esc", "back/quit")],
+        Screen::PathInput => &[
+            ("enter", "select"),
+            ("tab", "complete"),
+            ("ctrl-u", "clear"),
+            ("esc", "back/quit"),
+        ],
         Screen::Home => &[
             ("↑↓/1-9", "menu"),
             ("enter", "select"),
@@ -110,7 +121,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             ("tab", "switch step"),
             ("keys", "sent to tool"),
         ],
-        Screen::Run => &[("q/enter", "home"), ("e", "evaluate"), ("pgup/pgdn", "scroll"), ("tab", "switch step")],
+        Screen::Run => &[
+            ("q/enter", "home"),
+            ("e", "evaluate"),
+            ("pgup/pgdn", "scroll"),
+            ("tab", "switch step"),
+        ],
         Screen::Eval => &[
             ("tab", "hydrograph/catchment"),
             ("↑↓", "select"),
@@ -136,30 +152,65 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
 // ---------------------------------------------------------------------------
 
 fn draw_path_input(f: &mut Frame, area: Rect, app: &App) {
-    let [_, mid, _] = Layout::vertical([Constraint::Fill(1), Constraint::Length(14), Constraint::Fill(2)]).areas(area);
-    let [_, mid, _] = Layout::horizontal([Constraint::Fill(1), Constraint::Max(90), Constraint::Fill(1)]).areas(mid);
+    let [_, mid, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(14),
+        Constraint::Fill(2),
+    ])
+    .areas(area);
+    let [_, mid, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Max(90),
+        Constraint::Fill(1),
+    ])
+    .areas(mid);
     let mut lines = vec![
         Line::from("Select a data folder").bold(),
         Line::raw(""),
-        Line::from(vec![Span::raw("  → ").fg(Color::Yellow), Span::raw("config/").fg(Color::Green), Span::raw("   realization.json + hydrofabric .gpkg").fg(DIM)]),
-        Line::from(vec![Span::raw("  → ").fg(Color::Yellow), Span::raw("forcings/").fg(Color::Blue), Span::raw(" meteorological forcing data").fg(DIM)]),
-        Line::from(vec![Span::raw("  → ").fg(Color::Yellow), Span::raw("outputs/").fg(Color::Magenta), Span::raw("  simulation results (created if missing)").fg(DIM)]),
+        Line::from(vec![
+            Span::raw("  → ").fg(Color::Yellow),
+            Span::raw("config/").fg(Color::Green),
+            Span::raw("   realization.json + hydrofabric .gpkg").fg(DIM),
+        ]),
+        Line::from(vec![
+            Span::raw("  → ").fg(Color::Yellow),
+            Span::raw("forcings/").fg(Color::Blue),
+            Span::raw(" meteorological forcing data").fg(DIM),
+        ]),
+        Line::from(vec![
+            Span::raw("  → ").fg(Color::Yellow),
+            Span::raw("outputs/").fg(Color::Magenta),
+            Span::raw("  simulation results (created if missing)").fg(DIM),
+        ]),
         Line::raw(""),
-        Line::from(vec![Span::raw(" path: ").fg(DIM), Span::raw(app.path_input.clone()).bold(), Span::raw("█").fg(ACCENT)]),
+        Line::from(vec![
+            Span::raw(" path: ").fg(DIM),
+            Span::raw(app.path_input.clone()).bold(),
+            Span::raw("█").fg(ACCENT),
+        ]),
         Line::raw(""),
     ];
     if let Some(e) = &app.path_error {
         lines.push(Line::from(format!(" ✗ {e}")).red());
     }
-    let block = Block::bordered().border_type(BorderType::Rounded).title(" Data folder ");
-    f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), mid);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" Data folder ");
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        mid,
+    );
 }
 
 // ---------------------------------------------------------------------------
 
 fn draw_home(f: &mut Frame, area: Rect, app: &App) {
-    let [left, right] = Layout::horizontal([Constraint::Length(46), Constraint::Min(30)]).areas(area);
-    let [menu_area, backend_area] = Layout::vertical([Constraint::Min(6), Constraint::Length(7)]).areas(left);
+    let [left, right] =
+        Layout::horizontal([Constraint::Length(46), Constraint::Min(30)]).areas(area);
+    let [menu_area, backend_area] =
+        Layout::vertical([Constraint::Min(6), Constraint::Length(7)]).areas(left);
 
     let items: Vec<ListItem> = app
         .menu_items()
@@ -180,7 +231,11 @@ fn draw_home(f: &mut Frame, area: Rect, app: &App) {
         .collect();
     let mut state = ListState::default().with_selected(Some(app.menu_idx));
     let list = List::new(items)
-        .block(Block::bordered().border_type(BorderType::Rounded).title(" Menu "))
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .title(" Menu "),
+        )
         .highlight_style(Style::new().bg(ACCENT).fg(Color::Black).bold())
         .highlight_symbol("▶ ");
     f.render_stateful_widget(list, menu_area, &mut state);
@@ -190,7 +245,13 @@ fn draw_home(f: &mut Frame, area: Rect, app: &App) {
     for k in crate::backend::BackendKind::ALL {
         let avail = app.detected.available(k);
         let selected = app.backend == Some(k);
-        let mark = if selected { "●" } else if avail { "○" } else { "✗" };
+        let mark = if selected {
+            "●"
+        } else if avail {
+            "○"
+        } else {
+            "✗"
+        };
         let style = if selected {
             Style::new().fg(Color::Cyan).bold()
         } else if avail {
@@ -203,11 +264,15 @@ fn draw_home(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(app.detected.summary(k)).fg(DIM),
         ]));
     }
-    let block = Block::bordered().border_type(BorderType::Rounded).title(" Backends (b to switch) ");
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" Backends (b to switch) ");
     f.render_widget(Paragraph::new(lines).block(block), backend_area);
 
     // Preflight
-    let block = Block::bordered().border_type(BorderType::Rounded).title(" Preflight ");
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" Preflight ");
     let Some(pf) = &app.preflight else {
         f.render_widget(
             Paragraph::new("No backend selected - install bmi-driver/rs-route, docker or podman.")
@@ -230,20 +295,32 @@ fn draw_home(f: &mut Frame, area: Rect, app: &App) {
         .collect();
     lines.push(Line::raw(""));
     let (msg, style) = match pf.worst() {
-        Level::Fail => ("Fix the ✗ items above before running.", level_style(Level::Fail)),
+        Level::Fail => (
+            "Fix the ✗ items above before running.",
+            level_style(Level::Fail),
+        ),
         Level::Warn => ("Ready to run (with warnings).", level_style(Level::Warn)),
         _ => ("Ready to run.", level_style(Level::Ok).bold()),
     };
     lines.push(Line::styled(format!(" {msg}"), style));
     if let Some(run) = &app.run {
         let s = if run.finished {
-            if run.succeeded() { "last run: succeeded (v to view)" } else { "last run: failed/cancelled (v to view)" }
+            if run.succeeded() {
+                "last run: succeeded (v to view)"
+            } else {
+                "last run: failed/cancelled (v to view)"
+            }
         } else {
             "run in progress (v to view)"
         };
         lines.push(Line::from(format!(" {s}")).fg(DIM));
     }
-    f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: false }), right);
+    f.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        right,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -255,14 +332,20 @@ fn draw_run(f: &mut Frame, area: Rect, app: &mut App) {
         Layout::vertical([Constraint::Length(n * 2 + 2), Constraint::Min(4)]).areas(area);
 
     // Step list with gauges
-    let block = Block::bordered().border_type(BorderType::Rounded).title(" Run ").title(
-        Line::from(match (run.finished, run.succeeded()) {
-            (false, _) => format!(" running {} ", fmt_dur(run.started.elapsed())),
-            (true, true) => format!(" finished in {} ✓ ", fmt_dur(run.elapsed.unwrap_or_default())),
-            (true, false) => " stopped ".to_string(),
-        })
-        .right_aligned(),
-    );
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(" Run ")
+        .title(
+            Line::from(match (run.finished, run.succeeded()) {
+                (false, _) => format!(" running {} ", fmt_dur(run.started.elapsed())),
+                (true, true) => format!(
+                    " finished in {} ✓ ",
+                    fmt_dur(run.elapsed.unwrap_or_default())
+                ),
+                (true, false) => " stopped ".to_string(),
+            })
+            .right_aligned(),
+        );
     let inner = block.inner(steps_area);
     f.render_widget(block, steps_area);
     let rows = Layout::vertical(vec![Constraint::Length(2); run.steps.len()]).split(inner);
@@ -289,10 +372,20 @@ fn draw_run(f: &mut Frame, area: Rect, app: &mut App) {
         ];
         f.render_widget(Paragraph::new(label), label_area);
 
-        let gauge_area = Rect { height: 1, ..gauge_area };
+        let gauge_area = Rect {
+            height: 1,
+            ..gauge_area
+        };
         let (ratio, text) = match (step.progress, &step.status) {
-            (_, StepStatus::Done) => (1.0, step.progress.map_or("done".into(), |(_, l)| format!("{l}/{l}"))),
-            (Some((p, l)), _) => (p as f64 / l as f64, format!("{p}/{l}  {:.0}%", 100.0 * p as f64 / l as f64)),
+            (_, StepStatus::Done) => (
+                1.0,
+                step.progress
+                    .map_or("done".into(), |(_, l)| format!("{l}/{l}")),
+            ),
+            (Some((p, l)), _) => (
+                p as f64 / l as f64,
+                format!("{p}/{l}  {:.0}%", 100.0 * p as f64 / l as f64),
+            ),
             (None, StepStatus::Running) => (0.0, "starting…".into()),
             _ => (0.0, String::new()),
         };
@@ -306,7 +399,11 @@ fn draw_run(f: &mut Frame, area: Rect, app: &mut App) {
             StepStatus::Failed(_) | StepStatus::Cancelled => Color::Red,
             _ => ACCENT,
         };
-        let label = if step.progress.is_some() { format!("{text}{unit}") } else { text };
+        let label = if step.progress.is_some() {
+            format!("{text}{unit}")
+        } else {
+            text
+        };
         f.render_widget(
             Gauge::default()
                 .gauge_style(Style::new().fg(color).bg(Color::Rgb(30, 30, 40)))
@@ -321,9 +418,10 @@ fn draw_run(f: &mut Frame, area: Rect, app: &mut App) {
     let step = &run.steps[run.view.min(run.steps.len() - 1)];
     let mut title = format!(" {} ", step.kind.label());
     if let Some(p) = &step.proc
-        && p.scrollback() > 0 {
-            title.push_str(&format!("[scrolled back {} lines] ", p.scrollback()));
-        }
+        && p.scrollback() > 0
+    {
+        title.push_str(&format!("[scrolled back {} lines] ", p.scrollback()));
+    }
     let awaiting = run.awaiting_input() && run.view == run.current;
     let border = if awaiting { Color::Yellow } else { DIM };
     let mut block = Block::bordered()
@@ -360,7 +458,8 @@ fn draw_run(f: &mut Frame, area: Rect, app: &mut App) {
 
 fn draw_eval(f: &mut Frame, area: Rect, app: &App) {
     let Some(ev) = &app.eval else { return };
-    let [list_area, chart_area] = Layout::horizontal([Constraint::Length(28), Constraint::Min(30)]).areas(area);
+    let [list_area, chart_area] =
+        Layout::horizontal([Constraint::Length(28), Constraint::Min(30)]).areas(area);
 
     // Item list
     let tab_title = Line::from(vec![
@@ -375,11 +474,15 @@ fn draw_eval(f: &mut Frame, area: Rect, app: &App) {
         .title_bottom(Line::from(count).right_aligned());
     if ev.filtering || !ev.filter.is_empty() {
         let cursor = if ev.filtering { "█" } else { "" };
-        block = block.title_bottom(Line::from(format!(" /{}{cursor} ", ev.filter)).fg(Color::Yellow));
+        block =
+            block.title_bottom(Line::from(format!(" /{}{cursor} ", ev.filter)).fg(Color::Yellow));
     }
     let inner_h = list_area.height.saturating_sub(2) as usize;
     // Only build list items for the visible window (catchment dirs can be huge).
-    let start = ev.selected.saturating_sub(inner_h / 2).min(ev.visible.len().saturating_sub(inner_h));
+    let start = ev
+        .selected
+        .saturating_sub(inner_h / 2)
+        .min(ev.visible.len().saturating_sub(inner_h));
     let items: Vec<ListItem> = ev
         .visible
         .iter()
@@ -387,7 +490,8 @@ fn draw_eval(f: &mut Frame, area: Rect, app: &App) {
         .take(inner_h)
         .map(|&i| ListItem::new(ev.item_label(i)))
         .collect();
-    let mut state = ListState::default().with_selected((!ev.visible.is_empty()).then(|| ev.selected - start));
+    let mut state =
+        ListState::default().with_selected((!ev.visible.is_empty()).then(|| ev.selected - start));
     let list = List::new(items)
         .block(block)
         .highlight_style(Style::new().bg(ACCENT).fg(Color::Black).bold())
@@ -398,16 +502,25 @@ fn draw_eval(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn tab_style(active: bool) -> Style {
-    if active { Style::new().fg(Color::Black).bg(ACCENT).bold() } else { Style::new().fg(DIM) }
+    if active {
+        Style::new().fg(Color::Black).bg(ACCENT).bold()
+    } else {
+        Style::new().fg(DIM)
+    }
 }
 
 fn fmt_num(v: f64) -> String {
     let a = v.abs();
-    if a != 0.0 && (a >= 1e5 || a < 1e-3) { format!("{v:.3e}") } else { format!("{v:.3}") }
+    if a != 0.0 && (a >= 1e5 || a < 1e-3) {
+        format!("{v:.3e}")
+    } else {
+        format!("{v:.3}")
+    }
 }
 
 fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
-    let [info_area, chart_area] = Layout::vertical([Constraint::Length(4), Constraint::Min(5)]).areas(area);
+    let [info_area, chart_area] =
+        Layout::vertical([Constraint::Length(4), Constraint::Min(5)]).areas(area);
 
     // Info / stats panel
     let source = match ev.tab {
@@ -415,7 +528,11 @@ fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
             .nc_files
             .get(ev.nc_idx)
             .map(|p| {
-                let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 if ev.nc_files.len() > 1 {
                     format!("{name} ({}/{}, f: next)", ev.nc_idx + 1, ev.nc_files.len())
                 } else {
@@ -432,13 +549,25 @@ fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
         }
     };
     let vars: Vec<String> = match ev.tab {
-        Tab::Hydrograph => ev.troute.as_ref().map(|t| t.vars.clone()).unwrap_or_default(),
-        Tab::Catchment => ev.csv.as_ref().map(|c| c.columns.clone()).unwrap_or_default(),
+        Tab::Hydrograph => ev
+            .troute
+            .as_ref()
+            .map(|t| t.vars.clone())
+            .unwrap_or_default(),
+        Tab::Catchment => ev
+            .csv
+            .as_ref()
+            .map(|c| c.columns.clone())
+            .unwrap_or_default(),
     };
     let cur = ev.current_var();
     let mut var_spans = vec![Span::raw(" variable ").fg(DIM)];
     for v in &vars {
-        let style = if Some(v) == cur.as_ref() { Style::new().fg(Color::Black).bg(Color::Cyan) } else { Style::new().fg(DIM) };
+        let style = if Some(v) == cur.as_ref() {
+            Style::new().fg(Color::Black).bg(Color::Cyan)
+        } else {
+            Style::new().fg(DIM)
+        };
         var_spans.push(Span::styled(format!(" {v} "), style));
         var_spans.push(Span::raw(" "));
     }
@@ -463,20 +592,35 @@ fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
 
     let block = Block::bordered().border_type(BorderType::Rounded);
     let Some(series) = &ev.series else {
-        let msg = ev.error.clone().unwrap_or_else(|| "nothing selected".into());
+        let msg = ev
+            .error
+            .clone()
+            .unwrap_or_else(|| "nothing selected".into());
         f.render_widget(
-            Paragraph::new(msg).fg(DIM).block(block).alignment(Alignment::Center).wrap(Wrap { trim: true }),
+            Paragraph::new(msg)
+                .fg(DIM)
+                .block(block)
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: true }),
             chart_area,
         );
         return;
     };
     let Some(st) = series.stats() else {
-        f.render_widget(Paragraph::new("series has no valid values").fg(DIM).block(block), chart_area);
+        f.render_widget(
+            Paragraph::new("series has no valid values")
+                .fg(DIM)
+                .block(block),
+            chart_area,
+        );
         return;
     };
     let width = chart_area.width.saturating_sub(12).max(10) as usize;
     let data = series.decimated(width * 2);
-    let (t0, t1) = (*series.t.first().unwrap_or(&0) as f64, *series.t.last().unwrap_or(&1) as f64);
+    let (t0, t1) = (
+        *series.t.first().unwrap_or(&0) as f64,
+        *series.t.last().unwrap_or(&1) as f64,
+    );
     let t1 = if t1 <= t0 { t0 + 1.0 } else { t1 };
     let (mut lo, mut hi) = (st.min, st.max);
     if (hi - lo).abs() < f64::EPSILON {
@@ -484,7 +628,14 @@ fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
         hi += 1.0;
     }
     let pad = (hi - lo) * 0.05;
-    let (lo, hi) = (if st.min >= 0.0 { (lo - pad).max(0.0) } else { lo - pad }, hi + pad);
+    let (lo, hi) = (
+        if st.min >= 0.0 {
+            (lo - pad).max(0.0)
+        } else {
+            lo - pad
+        },
+        hi + pad,
+    );
 
     let x_labels: Vec<Span> = (0..=3)
         .map(|i| {
@@ -492,8 +643,14 @@ fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
             Span::raw(fmt_time(t as i64).chars().take(10).collect::<String>())
         })
         .collect();
-    let y_labels: Vec<Span> = (0..=4).map(|i| Span::raw(fmt_num(lo + (hi - lo) * i as f64 / 4.0))).collect();
-    let y_title = if series.units.is_empty() { cur.clone().unwrap_or_default() } else { series.units.clone() };
+    let y_labels: Vec<Span> = (0..=4)
+        .map(|i| Span::raw(fmt_num(lo + (hi - lo) * i as f64 / 4.0)))
+        .collect();
+    let y_title = if series.units.is_empty() {
+        cur.clone().unwrap_or_default()
+    } else {
+        series.units.clone()
+    };
     let dataset = Dataset::default()
         .name(series.title.clone())
         .marker(symbols::Marker::Braille)
@@ -502,7 +659,12 @@ fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
         .data(&data);
     let chart = Chart::new(vec![dataset])
         .block(block.title(Line::from(format!(" {} ", series.title)).bold()))
-        .x_axis(Axis::default().style(Style::new().fg(DIM)).bounds([t0, t1]).labels(x_labels))
+        .x_axis(
+            Axis::default()
+                .style(Style::new().fg(DIM))
+                .bounds([t0, t1])
+                .labels(x_labels),
+        )
         .y_axis(
             Axis::default()
                 .title(Span::raw(y_title).fg(DIM))
@@ -517,8 +679,12 @@ fn draw_chart(f: &mut Frame, area: Rect, ev: &EvalState) {
 // ---------------------------------------------------------------------------
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let [r] = Layout::vertical([Constraint::Length(h.min(area.height))]).flex(Flex::Center).areas(area);
-    let [r] = Layout::horizontal([Constraint::Length(w.min(area.width))]).flex(Flex::Center).areas(r);
+    let [r] = Layout::vertical([Constraint::Length(h.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    let [r] = Layout::horizontal([Constraint::Length(w.min(area.width))])
+        .flex(Flex::Center)
+        .areas(r);
     r
 }
 
@@ -526,7 +692,9 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
     let (title, text, color): (String, Text, Color) = match p {
         Popup::Cleanup { files, dirs, .. } => {
             let mut lines = vec![
-                Line::from(format!("{files} files already exist in the output folders:")),
+                Line::from(format!(
+                    "{files} files already exist in the output folders:"
+                )),
                 Line::raw(""),
             ];
             for (d, n) in dirs {
@@ -534,9 +702,18 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
             }
             lines.extend([
                 Line::raw(""),
-                Line::from(vec![Span::raw(" d ").black().on_red(), Span::raw(" delete them and run a fresh simulation")]),
-                Line::from(vec![Span::raw(" k ").black().on_green(), Span::raw(" keep them and run (files get overwritten)")]),
-                Line::from(vec![Span::raw(" esc ").black().on_dark_gray(), Span::raw(" cancel")]),
+                Line::from(vec![
+                    Span::raw(" d ").black().on_red(),
+                    Span::raw(" delete them and run a fresh simulation"),
+                ]),
+                Line::from(vec![
+                    Span::raw(" k ").black().on_green(),
+                    Span::raw(" keep them and run (files get overwritten)"),
+                ]),
+                Line::from(vec![
+                    Span::raw(" esc ").black().on_dark_gray(),
+                    Span::raw(" cancel"),
+                ]),
             ]);
             ("Existing outputs".into(), Text::from(lines), Color::Yellow)
         }
@@ -545,7 +722,12 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
             Text::from(vec![
                 Line::from("Stop the running step? Partial outputs will be left in place."),
                 Line::raw(""),
-                Line::from(vec![Span::raw(" y ").black().on_red(), Span::raw(" stop   "), Span::raw(" n ").black().on_dark_gray(), Span::raw(" keep running")]),
+                Line::from(vec![
+                    Span::raw(" y ").black().on_red(),
+                    Span::raw(" stop   "),
+                    Span::raw(" n ").black().on_dark_gray(),
+                    Span::raw(" keep running"),
+                ]),
             ]),
             Color::Red,
         ),
@@ -558,7 +740,8 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
         Popup::Help => (
             "Help".into(),
             Text::from(vec![
-                Line::from("ngiab-rs runs bmi-driver then rs-route on a NextGen data folder.").bold(),
+                Line::from("ngiab-rs runs bmi-driver then rs-route on a NextGen data folder.")
+                    .bold(),
                 Line::raw(""),
                 Line::from("Backends: local binaries, docker or podman (b to switch)."),
                 Line::from("Container runs mount the data folder at /data and run as your user."),
@@ -568,7 +751,9 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
                 Line::from("Evaluate: hydrographs from outputs/troute/*.nc (flow/velocity/depth)"),
                 Line::from("and any variable from the catchment cat-*.csv files."),
                 Line::raw(""),
-                Line::from("CLI:  ngiab-rs [DATA_DIR] [--auto] [-j N] [--backend local|docker|podman]"),
+                Line::from(
+                    "CLI:  ngiab-rs [DATA_DIR] [--auto] [-j N] [--backend local|docker|podman]",
+                ),
                 Line::raw(""),
                 Line::from("press any key").fg(DIM),
             ]),
@@ -577,9 +762,15 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
     };
     // Size to content, clamped to the screen; account for lines that will wrap.
     let screen = f.area();
-    let w = (text.width().max(title.len() + 4) as u16 + 4).min(screen.width.saturating_sub(2)).max(10);
+    let w = (text.width().max(title.len() + 4) as u16 + 4)
+        .min(screen.width.saturating_sub(2))
+        .max(10);
     let inner_w = w.saturating_sub(2).max(1) as usize;
-    let wrapped: usize = text.lines.iter().map(|l| l.width().max(1).div_ceil(inner_w)).sum();
+    let wrapped: usize = text
+        .lines
+        .iter()
+        .map(|l| l.width().max(1).div_ceil(inner_w))
+        .sum();
     let h = (wrapped as u16 + 2).min(screen.height);
     let area = centered(screen, w, h);
     f.render_widget(Clear, area);
@@ -589,7 +780,10 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
         .border_style(Style::new().fg(color))
         .title(Line::from(format!(" {title} ")).bold().fg(color));
     f.render_widget(
-        Paragraph::new(text).block(block).wrap(Wrap { trim: false }).style(Style::new().add_modifier(Modifier::empty())),
+        Paragraph::new(text)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .style(Style::new().add_modifier(Modifier::empty())),
         area,
     );
 }

@@ -86,7 +86,15 @@ mod tests {
         let a = tool_args(Tool::RsRoute, "/data", 8, Some(&real));
         assert_eq!(
             a,
-            vec!["/data", "-n", "8", "-i", "/data/outputs/ngen", "-o", "/data/outputs/troute"]
+            vec![
+                "/data",
+                "-n",
+                "8",
+                "-i",
+                "/data/outputs/ngen",
+                "-o",
+                "/data/outputs/troute"
+            ]
         );
         let b = tool_args(Tool::BmiDriver, "/data/", 3, Some(&real));
         assert_eq!(b, vec!["/data/", "-j", "3"]);
