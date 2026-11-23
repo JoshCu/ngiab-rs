@@ -32,6 +32,8 @@ const MAX_PAGES: usize = 20;
 /// Downloads can be large (model bundles); give them more than the default
 /// 120 s global timeout but still a bound.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// A download fails when no data arrives for this long.
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The shared agent: `User-Agent: ngiab-rs/<ver>`, 10 s connect and 120 s global
 /// timeouts, and HTTP error statuses returned as normal responses.
@@ -88,21 +90,62 @@ fn call_ok(
     if status.is_success() {
         return Ok(res);
     }
-    let remaining = res
-        .headers()
-        .get("x-ratelimit-remaining")
-        .and_then(|v| v.to_str().ok());
-    if is_github_api(url)
-        && (status.as_u16() == 429 || (status.as_u16() == 403 && remaining == Some("0")))
-    {
-        let hint = if github_token().is_some() {
-            "wait for the limit to reset"
-        } else {
-            "set GITHUB_TOKEN (any token, no scopes needed) or wait an hour"
-        };
-        bail!("GitHub API rate limit reached for {url}: {hint}");
+    if is_github_api(url) {
+        let header = |name: &str| res.headers().get(name).and_then(|v| v.to_str().ok());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if let Some(msg) = github_api_error(
+            status.as_u16(),
+            header("x-ratelimit-remaining"),
+            header("retry-after"),
+            header("x-ratelimit-reset"),
+            github_token().is_some(),
+            now,
+        ) {
+            bail!("GET {url}: {msg}");
+        }
     }
     bail!("GET {url}: HTTP {status}");
+}
+
+/// A readable message for a GitHub API failure that the user can act on: the
+/// primary rate limit (403/429 with `x-ratelimit-remaining: 0`), the secondary
+/// one (403/429 with `retry-after`) and a rejected `GITHUB_TOKEN` (401).
+fn github_api_error(
+    status: u16,
+    remaining: Option<&str>,
+    retry_after: Option<&str>,
+    reset: Option<&str>,
+    has_token: bool,
+    now: u64,
+) -> Option<String> {
+    if status == 401 && has_token {
+        return Some(format!(
+            "HTTP 401: GitHub rejected {GITHUB_TOKEN_ENV}; fix or unset it"
+        ));
+    }
+    let limited = status == 429
+        || (status == 403 && (remaining.map(str::trim) == Some("0") || retry_after.is_some()));
+    if !limited {
+        return None;
+    }
+    let secs = |v: Option<&str>| v.and_then(|s| s.trim().parse::<u64>().ok());
+    let wait = match (secs(retry_after), secs(reset)) {
+        (Some(s), _) => format!("retry in {s} s"),
+        (None, Some(at)) if at > now => {
+            format!("the limit resets in {} min", (at - now).div_ceil(60))
+        }
+        _ => "wait for the limit to reset".to_string(),
+    };
+    let token = if has_token {
+        String::new()
+    } else {
+        format!(", or set {GITHUB_TOKEN_ENV} (any token, no scopes needed) for a higher limit")
+    };
+    Some(format!(
+        "GitHub API rate limit reached (HTTP {status}): {wait}{token}"
+    ))
 }
 
 /// GETs `url` and parses the body as JSON (at most 10 MB).
@@ -272,9 +315,14 @@ pub fn part_path(dest: &Path) -> PathBuf {
 pub fn download(url: &str, dest: &Path, progress: bool) -> Result<u64> {
     let part = part_path(dest);
     let res = (|| -> Result<u64> {
+        // `identity`: the file is checksummed as served, so never ask for a
+        // transparently decompressed body. The per-read timeout catches a stalled
+        // transfer long before the global one.
         let req = get(url)
+            .header("Accept-Encoding", "identity")
             .config()
             .timeout_global(Some(DOWNLOAD_TIMEOUT))
+            .timeout_per_read(Some(DOWNLOAD_STALL_TIMEOUT))
             .build();
         let res = call_ok(req, url)?;
         let total = res.body().content_length();
@@ -355,6 +403,7 @@ impl Progress {
         if self.enabled {
             self.draw(done);
             eprintln!();
+            self.enabled = false;
         }
     }
 
@@ -363,6 +412,16 @@ impl Progress {
         // Pad so a shorter line fully overwrites the previous one.
         eprint!("\r{line:<70}");
         let _ = io::stderr().flush();
+    }
+}
+
+impl Drop for Progress {
+    /// A transfer that failed mid-way still ends its `\r` line, so the error
+    /// printed next starts on a fresh line.
+    fn drop(&mut self) {
+        if self.enabled && self.last.is_some() {
+            eprintln!();
+        }
     }
 }
 
@@ -1057,6 +1116,90 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  empty.txt
         let err = github_release("CIROH-UA/rs_route", ReleaseRef::Latest).unwrap_err();
         eprintln!("expected error: {err:#}");
         assert!(latest_tag_via_redirect("CIROH-UA/rs_route").is_err());
+    }
+
+    /// Serves one canned HTTP response on localhost; the thread returns the
+    /// request head it received.
+    fn serve_once(response: Vec<u8>) -> (String, std::thread::JoinHandle<String>) {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).unwrap() == 1 {
+                head.push(byte[0]);
+            }
+            s.write_all(&response).unwrap();
+            let _ = s.shutdown(std::net::Shutdown::Both);
+            String::from_utf8_lossy(&head).to_ascii_lowercase()
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn download_writes_part_then_renames() {
+        let d = tmpdir("dl-ok");
+        let dest = d.join("sub/x.tar.gz");
+        let (url, server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".to_vec(),
+        );
+        assert_eq!(download(&url, &dest, true).unwrap(), 5);
+        assert_eq!(fs::read(&dest).unwrap(), b"hello");
+        assert!(!part_path(&dest).exists());
+        let head = server.join().unwrap();
+        assert!(head.contains("accept-encoding: identity"), "{head}");
+        assert!(head.contains(&format!("user-agent: {}", USER_AGENT.to_ascii_lowercase())));
+        // Not api.github.com: no token, whatever the environment says.
+        assert!(!head.contains("authorization"), "{head}");
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn failed_download_keeps_the_old_file() {
+        let d = tmpdir("dl-bad");
+        let dest = d.join("x");
+        for response in [
+            // The connection closes after 10 of 100 bytes.
+            b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789".to_vec(),
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        ] {
+            fs::write(&dest, "old").unwrap();
+            let (url, server) = serve_once(response);
+            assert!(download(&url, &dest, false).is_err());
+            server.join().unwrap();
+            assert_eq!(fs::read(&dest).unwrap(), b"old");
+            assert!(!part_path(&dest).exists());
+        }
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn github_api_error_messages() {
+        let e = |status, rem, retry, reset, token| {
+            github_api_error(status, rem, retry, reset, token, 1_000)
+        };
+        let m = e(403, Some("0"), None, Some("1500"), false).unwrap();
+        assert!(
+            m.contains("resets in 9 min") && m.contains("GITHUB_TOKEN"),
+            "{m}"
+        );
+        let m = e(403, Some("0"), None, None, true).unwrap();
+        assert!(
+            m.contains("wait for the limit") && !m.contains("GITHUB_TOKEN"),
+            "{m}"
+        );
+        // Secondary rate limit: 403 with retry-after, requests still remaining.
+        let m = e(403, Some("4999"), Some("60"), Some("1500"), true).unwrap();
+        assert!(m.contains("retry in 60 s"), "{m}");
+        assert!(e(429, None, None, None, false).is_some());
+        let m = e(401, None, None, None, true).unwrap();
+        assert!(m.contains("rejected GITHUB_TOKEN"), "{m}");
+        // Not a rate limit: plain HTTP errors.
+        assert_eq!(e(403, Some("10"), None, None, false), None);
+        assert_eq!(e(404, Some("0"), None, None, false), None);
+        assert_eq!(e(401, None, None, None, false), None);
     }
 
     #[test]
