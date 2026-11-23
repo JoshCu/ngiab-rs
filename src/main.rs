@@ -3,6 +3,7 @@ mod auto;
 mod backend;
 mod config;
 mod eval;
+mod home;
 mod plan;
 mod preflight;
 mod pty;
