@@ -86,17 +86,29 @@ impl Preflight {
 /// `/ngen/ngen/data/...`) refer to the mounted data folder; other absolute paths
 /// live inside the image and can't be checked (`None`).
 pub fn host_path(data_dir: &Path, p: &str, kind: BackendKind) -> Option<PathBuf> {
-    let path = Path::new(p);
-    if !path.is_absolute() {
-        return Some(data_dir.join(normalise_rel(p)));
-    }
     if kind.is_container() {
+        // Container paths are POSIX strings: on Windows `Path::new("/dev/null")` is
+        // not absolute, and joining it onto the data folder would give `C:\dev\null`.
+        if !p.starts_with('/') {
+            return Some(data_dir.join(normalise_rel(p)));
+        }
         for prefix in [CONTAINER_DATA, "/ngen/ngen/data"] {
-            if let Ok(rest) = path.strip_prefix(prefix) {
-                return Some(data_dir.join(rest));
+            if let Some(rest) = p.strip_prefix(prefix)
+                && (rest.is_empty() || rest.starts_with('/'))
+            {
+                let rest = rest.trim_start_matches('/');
+                return Some(if rest.is_empty() {
+                    data_dir.to_path_buf()
+                } else {
+                    data_dir.join(normalise_rel(rest))
+                });
             }
         }
         return None;
+    }
+    let path = Path::new(p);
+    if !path.is_absolute() {
+        return Some(data_dir.join(normalise_rel(p)));
     }
     Some(path.to_path_buf())
 }
@@ -442,6 +454,17 @@ mod tests {
         assert!(host_path(d, "/dmod/x.so", BackendKind::Local).is_some());
         // component-wise prefix: /database is not /data
         assert!(host_path(d, "/database/x", BackendKind::Docker).is_none());
+        // in-image absolute paths are never mapped into the data folder (on any OS)
+        assert!(host_path(d, "/dev/null", BackendKind::Docker).is_none());
+        assert!(host_path(d, "/dev/null", BackendKind::Podman).is_none());
+        assert_eq!(
+            host_path(d, "/data", BackendKind::Docker).unwrap(),
+            d.to_path_buf()
+        );
+        assert_eq!(
+            host_path(d, "/ngen/ngen/data/outputs/ngen", BackendKind::Docker).unwrap(),
+            d.join("outputs").join("ngen")
+        );
         // local runs take absolute paths literally
         assert_eq!(
             host_path(d, "/data/x", BackendKind::Local).unwrap(),
