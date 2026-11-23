@@ -15,7 +15,7 @@ ngiab-rs [DATA_DIR] [--auto] [-j N] [--backend local|docker|podman] [--image IMA
 | `--auto` | no menus: run the preflight checks, then bmi-driver, then rs-route, then exit (non-zero on failure). |
 | `-j N`, `--num-cpus N` | CPUs to use, passed as `bmi-driver -j N` and `rs-route -n N` (default: all). |
 | `--backend` | `local` binaries, `docker`, or `podman`. Default preference: local > docker > podman. Also `NGIAB_RS_BACKEND`. |
-| `--image` | image for container backends (default `joshcu/ngiab-rs:latest`, or `NGIAB_RS_IMAGE`). |
+| `--image` | image for container backends (default `docker.io/joshcu/ngiab-rs:<version of this binary>`, or `NGIAB_RS_IMAGE`). |
 | `--no-routing` | auto mode: only run bmi-driver. |
 
 ## Interactive mode
