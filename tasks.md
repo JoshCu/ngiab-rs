@@ -496,7 +496,7 @@ Land this before any other change adds flags.
   - The `--check` exit codes behave as specified.
 
 ### B.4 `ngiab-rs models update | revert | status` (`src/models.rs`)
-- [ ] `models::Manifest` follows the contract schema in A.6. Fields: `schema`, `release`, `source_image`, `source_digest`, `created`, `target`, `min_glibc`, `prefixes`, `libs`, `tar_sha256`, plus `installed_at` and `installed_from` added on install. Parsing tolerates unknown fields.
+- [x] `models::Manifest` follows the contract schema in A.6. Fields: `schema`, `release`, `source_image`, `source_digest`, `created`, `target`, `min_glibc`, `prefixes`, `libs`, `tar_sha256`, plus `installed_at` and `installed_from` added on install. Parsing tolerates unknown fields. _(`models::Manifest` (serde default, unknown fields ignored); `Manifest::load(bundle)` errors on a `schema` newer than `MANIFEST_SCHEMA` with "run `ngiab-rs self update`"; also `Manifest::parse`, `prefixes_or_default`, `label` and `models::version_lt` for glibc)_
   - If `schema` is newer than this binary understands, print "run `ngiab-rs self update`".
 - [ ] Releases: model bundles are published under **separate tags `models-YYYY.MM.DD[.N]`**, which are never marked latest **[A]**.
   - To find the newest: `net::github_releases(REPO)`, keep tags starting with `models-` that are not drafts, and take the maximum by dotted-numeric comparison.
@@ -534,7 +534,7 @@ Land this before any other change adds flags.
   - Delete any stale `container.new` and `*.part`.
   - Report what was done.
   - Never touch anything else in `~/.ngiab`.
-- [ ] `Detected` gains `models: Option<Manifest>`, read from `container/manifest.json`. It feeds `Availability` for local **[C]**.
+- [x] `Detected` gains `models: Option<Manifest>`, read from `container/manifest.json`. It feeds `Availability` for local **[C]**. _(plus `model_root` (the bundle dir when it exists, `/` inside our own image), `models_error` (unreadable manifest), `own_image`, `local_platform` and `glibc`)_
 - [ ] **Acceptance:**
   - Install, update, update again: only one `.bak` remains, and an unchanged sha skips the download.
   - After update then revert, the previous manifest is back. A second revert swaps them again.
@@ -728,7 +728,7 @@ This is the only place it is implemented. The local section relies on it.
   - `init_config` templates such as `./config/cat_config/lstm/{{id}}.yml`.
 
 ### C.1 Bundle contract (consumed from A.6 and B.4)
-- [ ] The container path `/X` maps to `home::container_dir()/X`, so mapping is a prefix join:
+- [x] The container path `/X` maps to `home::container_dir()/X`, so mapping is a prefix join: _(`Detected::model_root` is `std::path::absolute(container_dir())` when it is a directory. Inside our own image it is `/`, so the mapping is the identity and nothing is staged. Validated with the test tarball extracted to `$NGIAB_HOME/container`)_
   ```
   ~/.ngiab/container/
     manifest.json
@@ -736,10 +736,10 @@ This is the only place it is implemented. The local section relies on it.
     dmod/shared_libs/*.so*                     (symlinks, RPATH=$ORIGIN, + libgfortran/libquadmath)
     ngen/ngen/extern/lstm/trained_neuralhydrology_models/...   (relative run_dir)
   ```
-- [ ] `src/models.rs` provides `Manifest` and `Manifest::load(container_dir())`. Mapped prefixes come from `manifest.prefixes`. If no manifest exists, fall back to `["/dmod", "/ngen/ngen/extern"]`.
+- [x] `src/models.rs` provides `Manifest` and `Manifest::load(container_dir())`. Mapped prefixes come from `manifest.prefixes`. If no manifest exists, fall back to `["/dmod", "/ngen/ngen/extern"]`. _(`Detected::model_prefixes()`)_
 
 ### C.2 Path mapping (`src/paths.rs`)
-- [ ] Treat container paths as POSIX **strings**, not `Path`. On Windows `Path::new("/dmod/x").is_absolute()` is false.
+- [x] Treat container paths as POSIX **strings**, not `Path`. On Windows `Path::new("/dmod/x").is_absolute()` is false. _(`src/paths.rs`: `Resolved::{Host, InImage, Unmapped}`, `PathMap::{resolve, rewrite_str, rewrite_text, unrewrite_str, container_paths_in, is_model_path}`; built by `Launcher::path_map()`)_
   ```rust
   pub enum Resolved { Host(PathBuf), InImage, Unmapped(PathBuf) }
   pub struct PathMap { pub kind: BackendKind, pub data_dir: PathBuf, pub model_root: Option<PathBuf>, pub prefixes: Vec<String> }
@@ -749,7 +749,7 @@ This is the only place it is implemented. The local section relies on it.
       pub fn unrewrite_str(&self, s: &str) -> Option<String>; // model_root/... -> /dmod/... (for write-back)
   }
   ```
-- [ ] Mapping rules. A prefix only matches on a component boundary (it must be followed by `/`, the end of the string, or a quote), so `/database` does not match `/data`.
+- [x] Mapping rules. A prefix only matches on a component boundary (it must be followed by `/`, the end of the string, or a quote), so `/database` does not match `/data`. _(whole values match when followed by `/` or the end; inside config text a prefix may also end at whitespace, a quote, `,`, `]` or `;`. Longest bundle prefix wins)_
 
   | input | container backends | local |
   |---|---|---|
@@ -759,11 +759,11 @@ This is the only place it is implemented. The local section relies on it.
   | other absolute | `InImage` | literal |
 
   The local rewrite therefore also covers `/data` and `/ngen/ngen/data`, which map to `data_dir`.
-- [ ] Replace `preflight::host_path` (`preflight.rs:80-94`) with `PathMap::resolve`. Keep a thin wrapper so the call sites at `preflight.rs:153,215,232` barely change.
+- [x] Replace `preflight::host_path` (`preflight.rs:80-94`) with `PathMap::resolve`. Keep a thin wrapper so the call sites at `preflight.rs:153,215,232` barely change. _(`preflight::host_path(map, p)` is the thin wrapper; tests moved to `paths.rs` with dmod/extern, boundary, spaces and Windows `data_dir` cases)_
   - Move the tests at `preflight.rs:373-390` to `paths.rs`.
   - The local `/data` case in the test at `preflight.rs:389` changes, because `/data` now always maps.
   - Add test cases for the extern and dmod prefixes, boundary matching, spaces in paths, and a Windows-style `data_dir`.
-- [ ] In `plan.rs:38`, the absolute `output_root` passed to rs-route `-i` must go through `PathMap`. On local, `/ngen/ngen/data/outputs/ngen` and `/data/outputs/ngen` both become `data_dir/outputs/ngen`.
+- [x] In `plan.rs:38`, the absolute `output_root` passed to rs-route `-i` must go through `PathMap`. On local, `/ngen/ngen/data/outputs/ngen` and `/data/outputs/ngen` both become `data_dir/outputs/ngen`. _(`plan::route_input`; containers keep absolute paths as they are)_
 
 ### C.3 Staging (`src/stage.rs`), local backend only
 Decision: rewrite the configs into a staging copy and pass `--config` to bmi-driver. Alternatives were rejected:
@@ -771,12 +771,12 @@ Decision: rewrite the configs into a staging copy and pass `--config` to bmi-dri
 - `unshare` and bind mounts are Linux-only and fragile.
 - A path remap inside bmi-driver can't reach files that the libraries read themselves.
 
-- [ ] **C.3.1 Staging dir (user decision): `<data>/.ngiab-rs/stage/`.** It is wiped and recreated on every local run.
+- [x] **C.3.1 Staging dir (user decision): `<data>/.ngiab-rs/stage/`.** It is wiped and recreated on every local run. _(`stage::stage_dir`; a symlinked or non-directory `.ngiab-rs` is refused. `safe_to_clean` refuses anything in or above `config`, `forcings`, `.ngiab-rs` or `eval`, and `clean_outputs` never descends into a `.ngiab-rs`. D.1's data-folder detection doesn't exist yet)_
   - It lives next to `config/`, so the echoed command stays self-contained and can be copy-pasted.
   - `preflight::safe_to_clean` (`preflight.rs:97`) and `count_files` must never count or delete `.ngiab-rs`. Only output dirs are cleaned.
   - D.1's "is this a data folder" detection must ignore it.
   - The staged files are generated, so no `.gitignore` is needed inside it.
-- [ ] **C.3.2** `pub fn stage(map: &PathMap, data_dir: &Path, divide_ids: &[String]) -> Result<Staged>`, where `Staged { realization: PathBuf, rewrote: usize, original_hash: u64 }`:
+- [x] **C.3.2** `pub fn stage(map: &PathMap, data_dir: &Path, divide_ids: &[String]) -> Result<Staged>`, where `Staged { realization: PathBuf, rewrote: usize, original_hash: u64 }`: _(signature `stage(map, data_dir, divide_ids, &Progress) -> Result<Option<Staged>>` (`None` = nothing to rewrite); `Staged` also has `values`/`linked` counts and the reverse tables. Every realization string is walked generically; `init_config` dirs are `stage/init/<n>/` where `<n>` is the n-th `init_config` in walk order; files outside the data folder are staged under their absolute path minus the leading `/`. `preflight::divide_ids` returns all ids. Text-hazard warnings (`" #"`, `": "`, quotes in the bundle or data path) are preflight Warns)_
   1. Parse `config/realization.json` as a `serde_json::Value`. Walk it generically: `global`, `catchments.*` overrides, and nested `modules[*].params`.
   2. Rewrite every string value that starts with a mapped prefix using `rewrite_str`. Edits are made on the JSON value, not on text, so escaping and spaces are safe.
   3. For each `init_config`, expand `{{id}}` for every divide. Change `read_divides` (`preflight.rs:305`) so it can return all ids.
@@ -789,14 +789,14 @@ Decision: rewrite the configs into a staging copy and pass `--config` to bmi-dri
   4. Text rewrites only happen at a boundary: the preceding character must be start-of-line, whitespace, `"`, `'`, `=`, `:`, `[` or `,`.
      - Warn if `model_root` contains `" #"`, `": "` or quotes, because those break unquoted YAML or namelist scalars.
   5. Write `stage/realization.json` and return the hash of what was written.
-- [ ] **C.3.3 Edge cases:**
+- [x] **C.3.3 Edge cases:** _(duplicate divide ids are staged once; in the TUI staging runs on a thread with a gauge and can be cancelled)_
   - A template without `{{id}}`: stage that single file.
   - Missing per-catchment files: skip them, because preflight already fails on the first divide.
   - Large domains (100k+ catchments × several modules):
     - Run staging as a new `StepKind::Stage` (`plan.rs:5`) with progress.
     - In auto mode, print "staging N files…".
   - Symlinks are used rather than hardlinks, so there are no filesystem constraints.
-- [ ] **C.3.4 Mapping write-back (user decision: apply to the real file, with a `.bak`).** After the bmi-driver step, if the hash of `stage/realization.json` differs from `original_hash`:
+- [x] **C.3.4 Mapping write-back (user decision: apply to the real file, with a `.bak`).** After the bmi-driver step, if the hash of `stage/realization.json` differs from `original_hash`: _(values staging changed are restored by JSON pointer (a host path the user wrote literally is never touched), values bmi-driver added are reverse-mapped by value. If the user's file changed during the run it is not overwritten (error naming the staged file). The `.bak` is a byte copy and the new file is written via temp+rename. TUI: a popup; auto: stderr. Runs after bmi-driver exits, also on failure or cancel. Validated: answering `y` on the LSTM folder added only `variables_names_map`, with `/dmod/...` and `./config/...` paths intact)_
   1. Reverse-map the value:
      - Staged `init_config` goes back to the original template.
      - `model_root/...` goes back to the container prefix, via `unrewrite_str`.
@@ -806,17 +806,17 @@ Decision: rewrite the configs into a staging copy and pass `--config` to bmi-dri
   4. Tell the user: a flash message in the TUI, or stderr in auto mode.
 
   Hook it into `App::advance` (`app.rs:378`) and the step loop in `auto.rs:53-70`. The result matches what a docker run would have written.
-- [ ] **C.3.5** `stage()` does nothing for container backends or when nothing needs rewriting. In that case run without `--config`, so the command line is the same as today.
+- [x] **C.3.5** `stage()` does nothing for container backends or when nothing needs rewriting. In that case run without `--config`, so the command line is the same as today. _(the stage dir is still wiped, so no stale `--config` target is left)_
 
 ### C.4 Command construction: env and `--config`
 - [x] Add `pub env: Vec<(String, String)>` to `CommandSpec` (`backend.rs:140`). _(plus `CommandSpec::new` and `to_command()`; display shell-quotes values)_
   - Apply it in `pty.rs:46`, `auto.rs:58` and `run_shell` (`main.rs:155-178`).
   - `CommandSpec::display` (`backend.rs:148`) prints `K=V` first, so the command can be copy-pasted.
-- [ ] Local `Tool::BmiDriver` in `Launcher::tool_command` (`backend.rs:185-193`) sets:
+- [x] Local `Tool::BmiDriver` in `Launcher::tool_command` (`backend.rs:185-193`) sets: _(`Launcher::local_env()`; no `LD_LIBRARY_PATH` without a bundle. The local shell (`s`) gets the same env so the echoed command can be re-run there)_
   - `LD_LIBRARY_PATH=<model_root>/dmod/shared_libs[:$LD_LIBRARY_PATH]`. This is still needed alongside the `$ORIGIN` RPATH, because user libraries that bmi-driver dlopens may need bundled libs. Worker subprocesses inherit it.
   - `OMP_NUM_THREADS=1` if unset, matching the Dockerfile.
-- [ ] `plan::tool_args` (`plan.rs:29`) gains `staged: Option<&Path>`. When set, the bmi-driver args become `[root, "--config", staged, "-j", N]`. Update the test at `plan.rs:76-93`.
-- [ ] `Launcher` gains `model_root: Option<PathBuf>`, set in:
+- [x] `plan::tool_args` (`plan.rs:29`) gains `staged: Option<&Path>`. When set, the bmi-driver args become `[root, "--config", staged, "-j", N]`. Update the test at `plan.rs:76-93`. _(`tool_args(tool, root, jobs, route_input, staged)`; `command_for` gained `staged: Option<&Path>` and returns `None` for the new `StepKind::Stage`)_
+- [x] `Launcher` gains `model_root: Option<PathBuf>`, set in: _(all three go through the new `Launcher::new(kind, image, data_dir, detected)`, which copies `detected.model_root`)_
   - `App::launcher` (`app.rs:178`)
   - the `--auto` launcher (`main.rs:86`)
   - `run_shell` (`main.rs:155-178`)
@@ -824,23 +824,23 @@ Decision: rewrite the configs into a staging copy and pass `--config` to bmi-dri
   Update the fixtures at `backend.rs:404-415`.
 
 ### C.5 Preflight (`src/preflight.rs`)
-- [ ] **C.5.1 Models check.** Local only, placed after the backend checks (`preflight.rs:260-270`).
+- [x] **C.5.1 Models check.** Local only, placed after the backend checks (`preflight.rs:260-270`). _(own image: Ok "image files (/dmod)")_
   - No bundle → **Fail** "model files not installed: run `ngiab-rs models update`".
   - Unreadable manifest → **Warn**.
   - Otherwise → **Ok** "models-YYYY.MM.DD (<root>)".
   - Add `pub models: Option<Manifest>` to `Preflight`.
-- [ ] **C.5.2 Library check** (`preflight.rs:241-250`), resolved through `PathMap`:
+- [x] **C.5.2 Library check** (`preflight.rs:241-250`), resolved through `PathMap`: _(with no bundle at all, bundle libraries are skipped so the models line is the single Fail. Verified: missing library, and SUMMA (`libsummabmi.so needs libraries that are missing: libsundials_…, libnetcdf.so.19, libnetcdff.so.7`) each give one Fail line)_
   - A mapped path that doesn't exist → **Fail** "not in model bundle <release> (try `ngiab-rs models update`)".
   - Any other missing absolute path → **Fail**. It is a Warn today.
   - For each existing library, run `ldd` with the same `LD_LIBRARY_PATH`. Any `not found` → **Fail**, listing the missing sonames. This is what catches SUMMA.
   - If `ldd` itself is missing → **Info** "dependency check skipped".
-- [ ] **C.5.3 glibc** (`cfg(all(target_os="linux", target_env="gnu"))`): if `gnu_get_libc_version()` is lower than `manifest.min_glibc`, **Fail** "glibc X < 2.34 required by the model libraries; use docker or podman".
-- [ ] **C.5.4 Adapter check.** Extend `config::Module` (`config.rs:14`) with `adapter: Option<String>` (the `name` field). Today `module_from` (`config.rs:90-97`) merges `model_type_name` and `name`, so they need separating.
+- [x] **C.5.3 glibc** (`cfg(all(target_os="linux", target_env="gnu"))`): if `gnu_get_libc_version()` is lower than `manifest.min_glibc`, **Fail** "glibc X < 2.34 required by the model libraries; use docker or podman". _(`backend::host_glibc()`; also makes local `Unsupported` in `availability`. Not exercised for real (host glibc is 2.43); the comparison is unit-tested)_
+- [x] **C.5.4 Adapter check.** Extend `config::Module` (`config.rs:14`) with `adapter: Option<String>` (the `name` field). Today `module_from` (`config.rs:90-97`) merges `model_type_name` and `name`, so they need separating. _(`Module.adapter` is the params `name`, else the `name` next to `params`. Verified on cat-1555522 (docker and local): one Fail line)_
   - Any `bmi_python` module → **Fail** "Python BMI models are not supported (bmi-driver is built without Python)". This applies to every backend now that the image has no Python.
-- [ ] **C.5.5 Init-config scan.** For the first divide (`preflight.rs:223-240`):
+- [x] **C.5.5 Init-config scan.** For the first divide (`preflight.rs:223-240`): _(local only; the Info estimate is the modules whose first-divide file needs rewriting × divides)_
   - A `/ngen/...` or `/dmod/...` path not covered by the bundle → **Warn**. Example: `/ngen/ngen/extern/cfe/...`.
   - When staging will rewrite files → **Info** "N config files will be rewritten for local paths".
-- [ ] **C.5.6** The `output_root` Fail message at `preflight.rs:164-168` now applies to container backends only. On local, `/data/...` and `/ngen/ngen/data/...` resolve to the data folder.
+- [x] **C.5.6** The `output_root` Fail message at `preflight.rs:164-168` now applies to container backends only. On local, `/data/...` and `/ngen/ngen/data/...` resolve to the data folder. _(falls out of `PathMap::resolve`: only containers return `InImage`)_
 
 ### C.6 Windows port: every Unix-only call site
 This is needed for the native Windows binary, which uses docker/podman only. `cargo build --target x86_64-pc-windows-msvc` must pass.
@@ -860,7 +860,7 @@ This is needed for the native Windows binary, which uses docker/podman only. `ca
 - [ ] **`backend.rs:251-258` (`mount_args`)**: _(partial: `backend::strip_verbatim` turns `\\?\C:\...` into `C:\...` and `\\?\UNC\server\share` into `\\server\share`, unit-tested on every platform. Not done: checking Docker Desktop and podman machine needs Windows hardware)_
   - The Windows source is `C:\Users\...`. Check that this works with Docker Desktop and with podman machine.
   - Never pass a `\\?\` path. Use `std::path::absolute`, which `main.rs:71` and `app.rs:229` already do.
-- [ ] **`preflight.rs:82-86`**: replaced by the string logic in `paths.rs` (C.2). _(partial: `host_path` now treats container paths as POSIX strings (`starts_with('/')`, component-boundary prefixes), so `/dev/null` and `/ngen/ngen/data/...` no longer map to `C:\...` on Windows; tested. Not done: the `PathMap` replacement belongs to C.2)_
+- [x] **`preflight.rs:82-86`**: replaced by the string logic in `paths.rs` (C.2). _(done in C.2: `PathMap::resolve`, tested with a Windows-style `data_dir`)_
 - [x] **`plan.rs:30,38`**: the `/` joins are only correct for container roots. Add `debug_assert!(kind.is_container() || cfg!(unix))`. _(the assert is in `plan::command_for`, where the backend kind is known)_
 - [x] **`app.rs:600-630` (`complete_path`)**: splits on `/` only. This is superseded by the picker rework in D.2. If it is kept, also split on `MAIN_SEPARATOR` and accept `~\` at `app.rs:220`. _(kept; it now splits on `/` and `MAIN_SEPARATOR` and accepts `~\`)_
 - [x] **`pty.rs:352,369` tests**: mark `#[cfg(unix)]`. Add a Windows smoke test (`cmd /C echo hello`); portable-pty uses ConPTY there. _(the Windows test compiles but has not been run on Windows)_
@@ -872,14 +872,14 @@ This is needed for the native Windows binary, which uses docker/podman only. `ca
 
 ### C.7 Availability
 The installer prompt hook itself is specified once, in B.7.
-- [ ] Replace `Detected::available -> bool` (`backend.rs:94-99`) with:
+- [x] Replace `Detected::available -> bool` (`backend.rs:94-99`) with: _(`Availability::{is_available, reason}`. main.rs: `Unsupported` is an error; `NotInstalled`/`NotRunning` print a warning and continue so preflight names the fix (B.7 replaces this with the installer prompt); with no backend at all every reason is listed. Also used by preflight (local on an unsupported platform))_
   ```rust
   pub enum Availability { Available, NotInstalled(String), NotRunning(String), Unsupported(String) }
   pub fn availability(&self, k: BackendKind) -> Availability
   ```
   - Keep `available()` as `matches!(…, Available)`.
   - Update all four call sites to show the reason: `main.rs:61`, `app.rs:253`, `backend.rs:103` (`default_kind`) and `ui.rs:191`.
-- [ ] How each backend is classified:
+- [x] How each backend is classified: _(also: model files for another target → NotInstalled; inside a container docker/podman are `Unsupported("not available inside a container")`; our own image needs no bundle)_
   - **Local:**
     - `Unsupported("not supported on this platform; use docker or podman")` if `!LOCAL_SUPPORTED`.
     - `Unsupported("glibc too old")` when glibc is below `min_glibc`.
@@ -887,9 +887,9 @@ The installer prompt hook itself is specified once, in B.7.
   - **docker/podman:**
     - `NotInstalled` if the binary is missing.
     - `NotRunning(note)` when `RuntimeInfo.usable == false`. This shows a "start it" hint and never offers a reinstall.
-- [ ] `default_kind()` keeps the order local > docker > podman, but only picks `Available` backends. A user with bmi-driver but no bundle therefore falls through to docker instead of failing.
-- [ ] `cycle_backend` (`app.rs:251`): show unavailable backends greyed out with their reason. Don't hide them.
-- [ ] If only the local bundle is missing (the binaries are present), offer `ngiab-rs models update` in-process instead of the full installer.
+- [x] `default_kind()` keeps the order local > docker > podman, but only picks `Available` backends. A user with bmi-driver but no bundle therefore falls through to docker instead of failing. _(unit-tested)_
+- [x] `cycle_backend` (`app.rs:251`): show unavailable backends greyed out with their reason. Don't hide them. _(the Backends panel shows every backend; unavailable ones are greyed with the reason instead of the summary. `b` cycles through all but `Unsupported` ones, so selecting e.g. local without model files shows preflight's fix; the flash includes the reason)_
+- [ ] If only the local bundle is missing (the binaries are present), offer `ngiab-rs models update` in-process instead of the full installer. _(not done: `models update` is still a stub and the in-process offer is part of the B.7 hooks; for now the availability reason and the preflight Fail both say "run `ngiab-rs models update`")_
 
 ### C.8 Ordering
 1. C.6 and the `CommandSpec.env` part of C.4. These are independent; they belong in the foundation PR and unblock Windows CI.
@@ -920,6 +920,11 @@ The installer prompt hook itself is specified once, in B.7.
 - **Cleaning outputs** never touches `.ngiab-rs/`.
 - **Other platforms.** Windows and macOS builds compile, and `--backend local` reports "not supported on this platform".
 - **Tests.** `cargo test` passes on all release targets.
+
+_Status after the local-backend phase (validated on this dev machine, Ubuntu with glibc 2.43, using the test tarball from `scripts/build-model-bundle.sh` extracted into `$NGIAB_HOME/container`; copies of real folders in /tmp):_
+- _Done: `--auto -b local -j 8` completed for a CFE + Noah-OWP + sloth folder (53 divides) and a 31-divide Rust-LSTM ensemble folder, `config/` sha256 unchanged. Data folders and `$NGIAB_HOME` with spaces work. The echoed bmi-driver command re-ran as pasted. Single Fail lines for missing bundle, missing library, SUMMA (ldd), and `bmi_python` (both backends). Inside our own image (`docker run … /data --auto -b local`) local uses `/dmod` directly, stages nothing and matches docker exactly._
+- _Parity: CFE + Noah-OWP + sloth CSVs and rs-route NetCDF (compared per feature_id; rs-route's feature order varies run to run) are bit-identical to `-b docker`. The LSTM folder differs by up to ~15% relative at tiny runoff values: the same bmi-driver binary, bundle and staged configs give the docker result exactly when run in `rockylinux:9.1` (glibc 2.34), and the host result on the glibc 2.43 host, so it is the host libm, not the path glue. Expect LSTM output to match docker only to libm accuracy, amplified by the recurrence._
+- _Not done: a clean Ubuntu 22.04/24.04 machine (needs `models update`, B.4), "glibc too old" for real (unit-tested only), macOS/Windows `--backend local` (unit-tested via `availability`; Windows compiles with `cargo xwin check`)._
 
 ### C.10 Risks
 - **Staging cost.** Domains with around 1M catchment files make staging slow. bmi-driver could later accept a path-prefix map for `library_file`, but init files would still need rewriting.
