@@ -34,6 +34,20 @@ pub fn in_container() -> bool {
     false
 }
 
+/// Are we running inside our own image (or one built from the same NGIAB base)?
+/// There `/dmod` is native whatever the arch, the arm64 image included. Checking for
+/// `/dmod/shared_libs` keeps a generic container (toolbox, distrobox) on an
+/// unsupported host from being treated as a local-capable platform.
+fn in_own_image(in_container: bool) -> bool {
+    in_container && Path::new("/dmod/shared_libs").is_dir()
+}
+
+/// Should `Detected::detect` look for local bmi-driver/rs-route at all? Only on a
+/// platform the model bundle supports, or inside our own image.
+fn probe_local(local_supported: bool, in_own_image: bool) -> bool {
+    local_supported || in_own_image
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum BackendKind {
     Local,
@@ -96,9 +110,7 @@ pub struct Detected {
 impl Detected {
     pub fn detect() -> Self {
         let in_container = in_container();
-        // Inside our image the tools and /dmod are native, whatever the arch (the
-        // arm64 image included); on a host, local needs a supported platform.
-        let (bmi_driver, rs_route) = if LOCAL_SUPPORTED || in_container {
+        let (bmi_driver, rs_route) = if probe_local(LOCAL_SUPPORTED, in_own_image(in_container)) {
             (
                 find_executable(&["bmi-driver"]),
                 find_executable(&["rs-route", "rs_route"]),
@@ -325,10 +337,7 @@ impl Launcher {
     /// paths; on SELinux-enforcing hosts label separation is disabled for the run
     /// rather than relabelling the user's folder.
     fn mount_args(&self) -> Vec<String> {
-        let src = self.data_dir.display().to_string();
-        // Docker Desktop / podman machine want a plain `C:\...` path, never `\\?\`.
-        #[cfg(windows)]
-        let src = src.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(src);
+        let src = strip_verbatim(&self.data_dir.display().to_string());
         let src = if src.contains(',') || src.contains('"') {
             format!("\"source={}\"", src.replace('"', "\"\""))
         } else {
@@ -364,6 +373,19 @@ impl Launcher {
             Duration::from_secs(10),
         )
         .map(|o| o.status.success())
+    }
+}
+
+/// Docker Desktop / podman machine want a plain `C:\...` or `\\server\share` path,
+/// never a verbatim `\\?\` one. `\\?\UNC\server\share` becomes `\\server\share`.
+/// Not cfg-gated so it is tested everywhere; such prefixes never occur on Unix.
+fn strip_verbatim(src: &str) -> String {
+    if let Some(rest) = src.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = src.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        src.to_string()
     }
 }
 
@@ -570,6 +592,29 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<Output> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_verbatim_prefixes() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\me\run"), r"C:\Users\me\run");
+        assert_eq!(
+            strip_verbatim(r"\\?\UNC\server\share\run"),
+            r"\\server\share\run"
+        );
+        assert_eq!(strip_verbatim(r"C:\Users\me\run"), r"C:\Users\me\run");
+        assert_eq!(strip_verbatim(r"\\server\share"), r"\\server\share");
+        assert_eq!(strip_verbatim("/home/me/run"), "/home/me/run");
+    }
+
+    #[test]
+    fn local_probe_gating() {
+        assert!(probe_local(true, false));
+        assert!(probe_local(true, true));
+        // arm64 (or other unsupported) host: only inside our own image
+        assert!(probe_local(false, true));
+        assert!(!probe_local(false, false));
+        // a generic container (toolbox/distrobox) is not our image
+        assert!(!in_own_image(false));
+    }
 
     fn launcher(kind: BackendKind) -> Launcher {
         Launcher {
