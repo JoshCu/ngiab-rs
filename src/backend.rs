@@ -1,7 +1,7 @@
 //! Detection of execution backends (local binaries, docker, podman) and
 //! construction of the command lines used to run each tool.
 
-use crate::models::Manifest;
+use crate::models::{Manifest, version_lt};
 use crate::paths::PathMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -21,6 +21,9 @@ pub const LOCAL_SUPPORTED: bool = cfg!(all(
     target_arch = "x86_64",
     target_env = "gnu"
 ));
+
+/// The only target model bundles are built for.
+pub const BUNDLE_TARGET: &str = "x86_64-unknown-linux-gnu";
 
 /// Are we ourselves running inside a container (docker, podman, ...)?
 #[cfg(unix)]
@@ -99,6 +102,34 @@ pub struct RuntimeInfo {
     pub note: Option<String>,
 }
 
+/// Can a backend be used right now, and if not, why (tasks.md C.7)?
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Availability {
+    Available,
+    /// Something is missing that an install would provide (the reason names it).
+    NotInstalled(String),
+    /// Installed but its daemon/machine is not reachable: start it, don't reinstall.
+    NotRunning(String),
+    /// Can't work on this platform at all.
+    Unsupported(String),
+}
+
+impl Availability {
+    pub fn is_available(&self) -> bool {
+        matches!(self, Availability::Available)
+    }
+
+    /// Why the backend can't be used (`None` when it can).
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Availability::Available => None,
+            Availability::NotInstalled(r)
+            | Availability::NotRunning(r)
+            | Availability::Unsupported(r) => Some(r),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Detected {
     pub bmi_driver: Option<PathBuf>,
@@ -166,15 +197,84 @@ impl Detected {
         }
     }
 
-    /// Can this backend run (at least) bmi-driver?
-    pub fn available(&self, kind: BackendKind) -> bool {
+    /// Can `kind` run a simulation, and if not, why?
+    pub fn availability(&self, kind: BackendKind) -> Availability {
         match kind {
-            BackendKind::Local => self.bmi_driver.is_some(),
-            _ => self.runtime(kind).is_some_and(|r| r.usable),
+            BackendKind::Local => self.local_availability(),
+            _ if self.in_container => {
+                Availability::Unsupported("not available inside a container".into())
+            }
+            _ => match self.runtime(kind) {
+                None => Availability::NotInstalled(format!("{} not installed", kind.name())),
+                Some(r) if !r.usable => Availability::NotRunning(format!(
+                    "{} is not running: {}",
+                    kind.name(),
+                    r.note.as_deref().unwrap_or("not usable")
+                )),
+                Some(_) => Availability::Available,
+            },
         }
     }
 
-    /// Preference: local > docker > podman.
+    fn local_availability(&self) -> Availability {
+        if !self.local_platform {
+            return Availability::Unsupported(
+                "not supported on this platform; use docker or podman".into(),
+            );
+        }
+        if !self.own_image
+            && let (Some(have), Some(m)) = (&self.glibc, &self.models)
+            && !m.min_glibc.is_empty()
+            && version_lt(have, &m.min_glibc)
+        {
+            return Availability::Unsupported(format!(
+                "glibc too old ({have} < {} required by the model files); use docker or podman",
+                m.min_glibc
+            ));
+        }
+        let mut missing = vec![];
+        if self.bmi_driver.is_none() {
+            missing.push("bmi-driver");
+        }
+        if self.rs_route.is_none() {
+            missing.push("rs-route");
+        }
+        let bundle = if self.own_image {
+            None
+        } else if let Some(m) = &self.models
+            && !m.target.is_empty()
+            && m.target != BUNDLE_TARGET
+        {
+            missing.push("model files for this machine");
+            Some(format!(
+                "installed ones are for {}; run `ngiab-rs models update`",
+                m.target
+            ))
+        } else if self.model_root.is_none() {
+            missing.push("model files");
+            Some("run `ngiab-rs models update`".to_string())
+        } else if let Some(e) = &self.models_error {
+            missing.push("a readable model manifest");
+            Some(format!("{e}; run `ngiab-rs models update`"))
+        } else {
+            None
+        };
+        if missing.is_empty() {
+            return Availability::Available;
+        }
+        let mut r = format!("missing {}", missing.join(", "));
+        if let Some(b) = bundle {
+            r.push_str(&format!(" ({b})"));
+        }
+        Availability::NotInstalled(r)
+    }
+
+    /// Is this backend [`Availability::Available`]?
+    pub fn available(&self, kind: BackendKind) -> bool {
+        self.availability(kind).is_available()
+    }
+
+    /// Preference local > docker > podman, among the available backends only.
     pub fn default_kind(&self) -> Option<BackendKind> {
         BackendKind::ALL.into_iter().find(|k| self.available(*k))
     }
@@ -898,7 +998,120 @@ mod tests {
             note: None,
         });
         assert_eq!(d.default_kind(), Some(BackendKind::Docker));
+        // bmi-driver alone (no rs-route, no bundle) falls through to docker
+        d.local_platform = true;
         d.bmi_driver = Some("/x".into());
+        assert_eq!(d.default_kind(), Some(BackendKind::Docker));
+        d.rs_route = Some("/y".into());
+        assert_eq!(d.default_kind(), Some(BackendKind::Docker));
+        d.model_root = Some("/b".into());
+        d.models = Some(Manifest::default());
         assert_eq!(d.default_kind(), Some(BackendKind::Local));
+    }
+
+    fn local_ready() -> Detected {
+        Detected {
+            local_platform: true,
+            bmi_driver: Some("/x".into()),
+            rs_route: Some("/y".into()),
+            model_root: Some("/b".into()),
+            models: Some(Manifest {
+                min_glibc: "2.34".into(),
+                ..Default::default()
+            }),
+            glibc: Some("2.39".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn local_availability_reasons() {
+        let ok = local_ready();
+        assert_eq!(ok.availability(BackendKind::Local), Availability::Available);
+
+        let d = Detected {
+            local_platform: false,
+            ..local_ready()
+        };
+        let a = d.availability(BackendKind::Local);
+        assert!(matches!(a, Availability::Unsupported(_)), "{a:?}");
+        assert!(
+            a.reason()
+                .unwrap()
+                .contains("not supported on this platform")
+        );
+
+        let d = Detected {
+            glibc: Some("2.31".into()),
+            ..local_ready()
+        };
+        let a = d.availability(BackendKind::Local);
+        assert!(matches!(a, Availability::Unsupported(_)), "{a:?}");
+        assert!(a.reason().unwrap().contains("glibc too old"));
+
+        let d = Detected {
+            model_root: None,
+            models: None,
+            rs_route: None,
+            ..local_ready()
+        };
+        let a = d.availability(BackendKind::Local);
+        assert!(matches!(a, Availability::NotInstalled(_)), "{a:?}");
+        let r = a.reason().unwrap();
+        assert!(r.contains("rs-route") && r.contains("model files"), "{r}");
+        assert!(r.contains("ngiab-rs models update"), "{r}");
+        assert!(!r.contains("bmi-driver"), "{r}");
+
+        let d = Detected {
+            models: Some(Manifest {
+                target: "aarch64-unknown-linux-gnu".into(),
+                ..Default::default()
+            }),
+            ..local_ready()
+        };
+        let a = d.availability(BackendKind::Local);
+        assert!(a.reason().unwrap().contains("aarch64"), "{a:?}");
+
+        let d = Detected {
+            models: None,
+            models_error: Some("bad json".into()),
+            ..local_ready()
+        };
+        let a = d.availability(BackendKind::Local);
+        assert!(a.reason().unwrap().contains("bad json"), "{a:?}");
+
+        // our own image: /dmod is real, no bundle needed
+        let d = Detected {
+            own_image: true,
+            in_container: true,
+            model_root: Some("/".into()),
+            models: None,
+            glibc: Some("2.1".into()),
+            ..local_ready()
+        };
+        assert_eq!(d.availability(BackendKind::Local), Availability::Available);
+        assert!(matches!(
+            d.availability(BackendKind::Docker),
+            Availability::Unsupported(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_availability() {
+        let mut d = Detected::default();
+        assert!(matches!(
+            d.availability(BackendKind::Docker),
+            Availability::NotInstalled(_)
+        ));
+        d.docker = Some(RuntimeInfo {
+            version: "27".into(),
+            usable: false,
+            rootless: false,
+            note: Some("Cannot connect to the Docker daemon".into()),
+        });
+        let a = d.availability(BackendKind::Docker);
+        assert!(matches!(a, Availability::NotRunning(_)), "{a:?}");
+        assert!(a.reason().unwrap().contains("Cannot connect"));
+        assert!(!d.available(BackendKind::Docker));
     }
 }

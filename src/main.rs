@@ -17,7 +17,7 @@ mod stage;
 mod ui;
 
 use app::App;
-use backend::{BackendKind, Detected, Launcher};
+use backend::{Availability, BackendKind, Detected, Launcher};
 use clap::Parser;
 use cli::{BackendCmd, Cli, Cmd, ModelsCmd, RunArgs, SelfCmd};
 use ratatui::crossterm::event::{self, Event};
@@ -65,15 +65,20 @@ fn run_main(args: RunArgs) -> ExitCode {
         (detected.in_container && d.is_dir()).then_some(d)
     });
 
-    if let Some(b) = args.backend
-        && !detected.available(b)
-    {
-        eprintln!(
-            "backend '{}' is not available: {}",
-            b.name(),
-            detected.summary(b)
-        );
-        return ExitCode::FAILURE;
+    // An explicitly chosen backend that can't work here is an error. One that is
+    // only missing something (or not running) goes on to the preflight checks,
+    // which say exactly what is missing and how to fix it.
+    if let Some(b) = args.backend {
+        match detected.availability(b) {
+            Availability::Available => {}
+            Availability::Unsupported(r) => {
+                eprintln!("backend '{}' is not available: {r}", b.name());
+                return ExitCode::FAILURE;
+            }
+            Availability::NotInstalled(r) | Availability::NotRunning(r) => {
+                eprintln!("warning: backend '{}' is not ready: {r}", b.name());
+            }
+        }
     }
 
     if args.auto {
@@ -93,7 +98,12 @@ fn run_main(args: RunArgs) -> ExitCode {
             }
         };
         let Some(kind) = args.backend.or_else(|| detected.default_kind()) else {
-            eprintln!("No backend found: install bmi-driver + rs-route, docker, or podman.");
+            eprintln!("No backend available:");
+            for k in BackendKind::ALL {
+                if let Some(r) = detected.availability(k).reason() {
+                    eprintln!("  {:<7} {r}", k.name());
+                }
+            }
             return ExitCode::FAILURE;
         };
         let launcher = Launcher::new(kind, args.image, data_dir, detected);

@@ -352,12 +352,10 @@ pub fn run(launcher: &Launcher, routing: bool) -> Preflight {
     let det = &launcher.detected;
     match kind {
         BackendKind::Local => {
-            if !det.local_platform {
-                pf.push(
-                    Level::Fail,
-                    "local",
-                    "not supported on this platform; use docker or podman",
-                );
+            if let Some(reason) = det.availability(kind).reason()
+                && !det.local_platform
+            {
+                pf.push(Level::Fail, "local", reason.to_string());
             }
             match &det.bmi_driver {
                 Some(p) => pf.push(Level::Ok, "bmi-driver", p.display().to_string()),

@@ -1,6 +1,6 @@
 //! Application state and input handling for the interactive TUI.
 
-use crate::backend::{BackendKind, Detected, Launcher, Tool};
+use crate::backend::{Availability, BackendKind, Detected, Launcher, Tool};
 use crate::config::{Realization, State, TROUTE_OUTPUT_DIR};
 use crate::eval::EvalState;
 use crate::plan::{self, RunOptions, StepKind};
@@ -270,14 +270,17 @@ impl App {
     pub fn refresh_preflight(&mut self) {
         self.preflight = self.launcher().map(|l| preflight::run(&l, true));
         if self.preflight.is_none() && self.data_dir.is_some() {
-            self.flash("no backend available: install bmi-driver, docker or podman");
+            self.flash("no backend available: see the Backends panel");
         }
     }
 
+    /// Switch to the next backend that can work on this platform. Backends that are
+    /// only missing something can be selected, so preflight explains what to fix;
+    /// unsupported ones are listed (greyed, with the reason) but skipped.
     fn cycle_backend(&mut self) {
         let avail: Vec<BackendKind> = BackendKind::ALL
             .into_iter()
-            .filter(|k| self.detected.available(*k))
+            .filter(|k| !matches!(self.detected.availability(*k), Availability::Unsupported(_)))
             .collect();
         if avail.is_empty() {
             self.flash("no backends available");
@@ -290,7 +293,10 @@ impl App {
         if Some(next) != self.backend {
             self.backend = Some(next);
             self.refresh_preflight();
-            self.flash(format!("backend: {}", next.name()));
+            match self.detected.availability(next).reason() {
+                None => self.flash(format!("backend: {}", next.name())),
+                Some(r) => self.flash(format!("backend: {} (not ready: {r})", next.name())),
+            }
         }
         let n = self.menu_items().len();
         self.menu_idx = self.menu_idx.min(n - 1);

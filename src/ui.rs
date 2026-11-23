@@ -243,25 +243,32 @@ fn draw_home(f: &mut Frame, area: Rect, app: &App) {
     // Backends
     let mut lines = Vec::new();
     for k in crate::backend::BackendKind::ALL {
-        let avail = app.detected.available(k);
+        let availability = app.detected.availability(k);
+        let avail = availability.is_available();
         let selected = app.backend == Some(k);
-        let mark = if selected {
+        let mark = if selected && avail {
             "●"
+        } else if selected {
+            "◍"
         } else if avail {
             "○"
         } else {
             "✗"
         };
-        let style = if selected {
-            Style::new().fg(Color::Cyan).bold()
-        } else if avail {
-            Style::new()
-        } else {
-            Style::new().fg(DIM)
+        let style = match (selected, avail) {
+            (true, true) => Style::new().fg(Color::Cyan).bold(),
+            (true, false) => Style::new().fg(Color::Yellow).bold(),
+            (false, true) => Style::new(),
+            (false, false) => Style::new().fg(DIM),
+        };
+        // Unavailable backends stay listed (greyed) with the reason.
+        let detail = match availability.reason() {
+            None => Span::raw(app.detected.summary(k)).fg(DIM),
+            Some(r) => Span::raw(r.to_string()).fg(DIM).italic(),
         };
         lines.push(Line::from(vec![
             Span::styled(format!(" {mark} {:<7}", k.name()), style),
-            Span::raw(app.detected.summary(k)).fg(DIM),
+            detail,
         ]));
     }
     let block = Block::bordered()
