@@ -8,10 +8,12 @@ mod home;
 mod installer;
 mod models;
 mod net;
+mod paths;
 mod plan;
 mod preflight;
 mod pty;
 mod selfupdate;
+mod stage;
 mod ui;
 
 use app::App;
@@ -94,12 +96,7 @@ fn run_main(args: RunArgs) -> ExitCode {
             eprintln!("No backend found: install bmi-driver + rs-route, docker, or podman.");
             return ExitCode::FAILURE;
         };
-        let launcher = Launcher {
-            kind,
-            image: args.image,
-            data_dir,
-            detected,
-        };
+        let launcher = Launcher::new(kind, args.image, data_dir, detected);
         let jobs = args
             .jobs
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
@@ -192,12 +189,12 @@ fn run_tui(app: &mut App, term: &AtomicBool) -> anyhow::Result<()> {
 fn run_shell(app: &App) {
     let Some(l) = app.launcher().or_else(|| {
         // Shell is still useful without a tool backend (e.g. to inspect files).
-        Some(Launcher {
-            kind: BackendKind::Local,
-            image: app.image.clone(),
-            data_dir: app.data_dir.clone()?,
-            detected: app.detected.clone(),
-        })
+        Some(Launcher::new(
+            BackendKind::Local,
+            app.image.clone(),
+            app.data_dir.clone()?,
+            app.detected.clone(),
+        ))
     }) else {
         return;
     };

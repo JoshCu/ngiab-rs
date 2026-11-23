@@ -1,6 +1,8 @@
 //! Detection of execution backends (local binaries, docker, podman) and
 //! construction of the command lines used to run each tool.
 
+use crate::models::Manifest;
+use crate::paths::PathMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -105,32 +107,55 @@ pub struct Detected {
     pub podman: Option<RuntimeInfo>,
     /// We are ourselves running inside a container.
     pub in_container: bool,
+    /// Local runs are possible on this platform (`LOCAL_SUPPORTED`, or our own image).
+    pub local_platform: bool,
+    /// Inside our own image: `/dmod` is real and needs no bundle.
+    pub own_image: bool,
+    /// Where bundle paths (`/dmod/...`) live for local runs: `home::container_dir()`
+    /// when it exists, or `/` inside our own image (identity mapping).
+    pub model_root: Option<PathBuf>,
+    /// The bundle's manifest, when `model_root` is a bundle with a readable one.
+    pub models: Option<Manifest>,
+    /// Why the manifest could not be read (bundle dir present but broken).
+    pub models_error: Option<String>,
+    /// Host glibc version (Linux gnu only).
+    pub glibc: Option<String>,
 }
 
 impl Detected {
     pub fn detect() -> Self {
         let in_container = in_container();
-        let (bmi_driver, rs_route) = if probe_local(LOCAL_SUPPORTED, in_own_image(in_container)) {
-            (
-                find_executable(&["bmi-driver"]),
-                find_executable(&["rs-route", "rs_route"]),
-            )
-        } else {
-            (None, None)
-        };
-        // Inside a container we never try to nest another container.
-        let (docker, podman) = if in_container {
-            (None, None)
-        } else {
-            (probe_runtime("docker"), probe_runtime("podman"))
-        };
-        Self {
-            bmi_driver,
-            rs_route,
-            docker,
-            podman,
+        let own_image = in_own_image(in_container);
+        let local_platform = probe_local(LOCAL_SUPPORTED, own_image);
+        let mut d = Self {
             in_container,
+            local_platform,
+            own_image,
+            glibc: host_glibc(),
+            ..Default::default()
+        };
+        if local_platform {
+            d.bmi_driver = find_executable(&["bmi-driver"]);
+            d.rs_route = find_executable(&["rs-route", "rs_route"]);
+            if own_image {
+                d.model_root = Some(PathBuf::from("/"));
+            } else if let Ok(dir) = crate::home::container_dir()
+                && dir.is_dir()
+            {
+                let dir = std::path::absolute(&dir).unwrap_or(dir);
+                match Manifest::load(&dir) {
+                    Ok(m) => d.models = Some(m),
+                    Err(e) => d.models_error = Some(format!("{e:#}")),
+                }
+                d.model_root = Some(dir);
+            }
         }
+        // Inside a container we never try to nest another container.
+        if !in_container {
+            d.docker = probe_runtime("docker");
+            d.podman = probe_runtime("podman");
+        }
+        d
     }
 
     pub fn runtime(&self, kind: BackendKind) -> Option<&RuntimeInfo> {
@@ -154,6 +179,11 @@ impl Detected {
         BackendKind::ALL.into_iter().find(|k| self.available(*k))
     }
 
+    /// Bundle prefixes mapped for local runs (the manifest's, else the defaults).
+    pub fn model_prefixes(&self) -> Vec<String> {
+        Manifest::prefixes_or_default(self.models.as_ref())
+    }
+
     pub fn local_tool(&self, tool: Tool) -> Option<&PathBuf> {
         match tool {
             Tool::BmiDriver => self.bmi_driver.as_ref(),
@@ -172,7 +202,14 @@ impl Detected {
                     .rs_route
                     .as_ref()
                     .map_or("missing".into(), |p| p.display().to_string());
-                format!("bmi-driver: {b}, rs-route: {r}")
+                let m = if self.own_image {
+                    "image /dmod".to_string()
+                } else {
+                    self.models
+                        .as_ref()
+                        .map_or("missing".into(), |m| m.label().to_string())
+                };
+                format!("bmi-driver: {b}, rs-route: {r}, models: {m}")
             }
             _ => match self.runtime(kind) {
                 None => format!("{} not installed", kind.name()),
@@ -252,9 +289,51 @@ pub struct Launcher {
     pub image: String,
     pub data_dir: PathBuf,
     pub detected: Detected,
+    /// Local runs: where bundle paths live (see `Detected::model_root`).
+    pub model_root: Option<PathBuf>,
 }
 
 impl Launcher {
+    pub fn new(kind: BackendKind, image: String, data_dir: PathBuf, detected: Detected) -> Self {
+        Self {
+            kind,
+            image,
+            data_dir,
+            model_root: detected.model_root.clone(),
+            detected,
+        }
+    }
+
+    /// How realization/config paths map onto this machine for this backend.
+    pub fn path_map(&self) -> PathMap {
+        PathMap {
+            kind: self.kind,
+            data_dir: self.data_dir.clone(),
+            model_root: self.model_root.clone(),
+            prefixes: self.detected.model_prefixes(),
+        }
+    }
+
+    /// Local runs: the env the model libraries need. `LD_LIBRARY_PATH` gets the
+    /// bundle's shared_libs in front (the libraries also have `$ORIGIN` RPATHs, but
+    /// user libraries bmi-driver dlopens may need bundled ones too), and
+    /// `OMP_NUM_THREADS=1` unless set, as in the Dockerfile.
+    pub fn local_env(&self) -> Vec<(String, String)> {
+        let mut env = vec![];
+        if let Some(root) = &self.model_root {
+            let libs = root.join("dmod").join("shared_libs").display().to_string();
+            let v = match std::env::var("LD_LIBRARY_PATH") {
+                Ok(old) if !old.is_empty() => format!("{libs}:{old}"),
+                _ => libs,
+            };
+            env.push(("LD_LIBRARY_PATH".into(), v));
+        }
+        if std::env::var_os("OMP_NUM_THREADS").is_none() {
+            env.push(("OMP_NUM_THREADS".into(), "1".into()));
+        }
+        env
+    }
+
     /// The data folder as the tool will see it.
     pub fn data_root(&self) -> String {
         if self.kind.is_container() {
@@ -274,13 +353,19 @@ impl Launcher {
         tag: &str,
     ) -> CommandSpec {
         match self.kind {
-            BackendKind::Local => CommandSpec::new(
-                self.detected
-                    .local_tool(tool)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| tool.binary().to_string()),
-                tool_args,
-            ),
+            BackendKind::Local => {
+                let mut spec = CommandSpec::new(
+                    self.detected
+                        .local_tool(tool)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| tool.binary().to_string()),
+                    tool_args,
+                );
+                if tool == Tool::BmiDriver {
+                    spec.env = self.local_env();
+                }
+                spec
+            }
             kind => {
                 let runtime = kind.name().to_string();
                 let name = format!("ngiab-rs-{}-{}", std::process::id(), tag);
@@ -329,7 +414,10 @@ impl Launcher {
             ]);
             CommandSpec::new(self.kind.name(), args)
         } else {
-            CommandSpec::new(host_shell(), vec![])
+            // The env bmi-driver gets, so its echoed command can be re-run by hand.
+            let mut spec = CommandSpec::new(host_shell(), vec![]);
+            spec.env = self.local_env();
+            spec
         }
     }
 
@@ -429,6 +517,19 @@ fn host_shell() -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "powershell.exe".into())
+}
+
+/// The host's glibc version (`gnu_get_libc_version`).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub fn host_glibc() -> Option<String> {
+    // SAFETY: returns a pointer to a static NUL-terminated string.
+    let v = unsafe { std::ffi::CStr::from_ptr(libc::gnu_get_libc_version()) };
+    Some(v.to_string_lossy().into_owned())
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub fn host_glibc() -> Option<String> {
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -617,11 +718,11 @@ mod tests {
     }
 
     fn launcher(kind: BackendKind) -> Launcher {
-        Launcher {
+        Launcher::new(
             kind,
-            image: DEFAULT_IMAGE.into(),
-            data_dir: "/home/me/run 1".into(),
-            detected: Detected {
+            DEFAULT_IMAGE.into(),
+            "/home/me/run 1".into(),
+            Detected {
                 bmi_driver: Some("/opt/bin/bmi-driver".into()),
                 docker: Some(RuntimeInfo {
                     version: "1".into(),
@@ -629,9 +730,43 @@ mod tests {
                     rootless: true,
                     note: None,
                 }),
+                model_root: Some("/home/me/.ngiab/container".into()),
                 ..Default::default()
             },
-        }
+        )
+    }
+
+    #[test]
+    fn local_bmi_driver_env() {
+        let l = launcher(BackendKind::Local);
+        let c = l.tool_command(Tool::BmiDriver, vec![], false, "x");
+        let ld = c.env.iter().find(|(k, _)| k == "LD_LIBRARY_PATH").unwrap();
+        assert!(
+            ld.1.starts_with("/home/me/.ngiab/container/dmod/shared_libs"),
+            "{ld:?}"
+        );
+        // rs-route needs none of it; container runs never get host env
+        assert!(
+            l.tool_command(Tool::RsRoute, vec![], false, "x")
+                .env
+                .is_empty()
+        );
+        let d = launcher(BackendKind::Docker);
+        assert!(
+            d.tool_command(Tool::BmiDriver, vec![], false, "x")
+                .env
+                .is_empty()
+        );
+        // no bundle: no LD_LIBRARY_PATH
+        let mut bare = launcher(BackendKind::Local);
+        bare.model_root = None;
+        assert!(
+            !bare
+                .tool_command(Tool::BmiDriver, vec![], false, "x")
+                .env
+                .iter()
+                .any(|(k, _)| k == "LD_LIBRARY_PATH")
+        );
     }
 
     #[test]

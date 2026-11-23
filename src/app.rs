@@ -6,9 +6,19 @@ use crate::eval::EvalState;
 use crate::plan::{self, RunOptions, StepKind};
 use crate::preflight::{self, Preflight};
 use crate::pty::{PtyProcess, awaiting_answer, parse_progress};
+use crate::stage::{self, Staged};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
+
+/// A staging run (local backend) on a background thread.
+pub struct StageJob {
+    pub progress: Arc<stage::Progress>,
+    rx: Receiver<anyhow::Result<Option<Staged>>>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -81,6 +91,9 @@ pub struct StepState {
     pub awaiting: bool,
     pub proc: Option<PtyProcess>,
     pub command: Option<String>,
+    /// Steps without a terminal (staging): their running job and a text to show.
+    pub job: Option<StageJob>,
+    pub note: Option<String>,
 }
 
 impl StepState {
@@ -98,6 +111,8 @@ pub struct RunState {
     pub elapsed: Option<Duration>,
     opts: RunOptions,
     real: Option<Realization>,
+    /// Local runs: the staged realization bmi-driver gets as `--config`.
+    pub staged: Option<Staged>,
 }
 
 impl RunState {
@@ -183,12 +198,12 @@ impl App {
     }
 
     pub fn launcher(&self) -> Option<Launcher> {
-        Some(Launcher {
-            kind: self.backend?,
-            image: self.image.clone(),
-            data_dir: self.data_dir.clone()?,
-            detected: self.detected.clone(),
-        })
+        Some(Launcher::new(
+            self.backend?,
+            self.image.clone(),
+            self.data_dir.clone()?,
+            self.detected.clone(),
+        ))
     }
 
     pub fn realization(&self) -> Option<&Realization> {
@@ -357,6 +372,15 @@ impl App {
                 return;
             }
         }
+        // Local runs rewrite container paths into a staged realization first.
+        let mut plan = plan;
+        if launcher.kind == BackendKind::Local
+            && let Some(i) = plan
+                .iter()
+                .position(|k| *k == StepKind::Tool(Tool::BmiDriver))
+        {
+            plan.insert(i, StepKind::Stage);
+        }
         let steps = plan
             .into_iter()
             .map(|kind| {
@@ -383,6 +407,8 @@ impl App {
                     awaiting: false,
                     proc: None,
                     command: None,
+                    job: None,
+                    note: None,
                 }
             })
             .collect();
@@ -398,6 +424,7 @@ impl App {
                 routing: true,
             },
             real,
+            staged: None,
         });
         self.screen = Screen::Run;
         self.advance();
@@ -409,6 +436,7 @@ impl App {
             return;
         };
         let pane = self.pane;
+        let gpkg = self.preflight.as_ref().and_then(|p| p.gpkg.clone());
         let Some(run) = self.run.as_mut() else { return };
         while run.current < run.steps.len() {
             let step = &mut run.steps[run.current];
@@ -416,9 +444,26 @@ impl App {
                 run.current += 1;
                 continue;
             }
-            let Some(spec) =
-                plan::command_for(step.kind, &launcher, &run.opts, run.real.as_ref(), true)
-            else {
+            if step.kind == StepKind::Stage {
+                step.job = Some(start_stage(&launcher, gpkg));
+                step.started = Some(Instant::now());
+                step.status = StepStatus::Running;
+                step.command = Some(format!(
+                    "stage configs into {}",
+                    stage::stage_dir(&launcher.data_dir).display()
+                ));
+                run.view = run.current;
+                return;
+            }
+            let staged = run.staged.as_ref().map(|s| s.realization.as_path());
+            let Some(spec) = plan::command_for(
+                step.kind,
+                &launcher,
+                &run.opts,
+                run.real.as_ref(),
+                staged,
+                true,
+            ) else {
                 step.status = StepStatus::Skipped("not applicable".into());
                 run.current += 1;
                 continue;
@@ -480,17 +525,95 @@ impl App {
     }
 
     fn cancel_run(&mut self) {
+        let mut was_bmi = false;
         if let Some(run) = self.run.as_mut() {
             if let Some(step) = run.steps.get_mut(run.current) {
                 if let Some(p) = step.proc.as_mut() {
                     p.kill();
                 }
+                if let Some(job) = step.job.take() {
+                    job.progress.cancel.store(true, Ordering::Relaxed);
+                }
+                was_bmi = step.kind == StepKind::Tool(Tool::BmiDriver)
+                    && step.status == StepStatus::Running;
                 step.status = StepStatus::Cancelled;
                 step.elapsed = step.started.map(|s| s.elapsed());
             }
             Self::skip_rest(run, "cancelled");
         }
+        if was_bmi {
+            self.write_back_after_bmi();
+        }
         self.finish_run();
+    }
+
+    /// After bmi-driver ran on a staged realization: apply any mappings it added to
+    /// the user's `config/realization.json` (C.3.4).
+    fn write_back_after_bmi(&mut self) {
+        let (Some(launcher), Some(staged)) = (
+            self.launcher(),
+            self.run.as_ref().and_then(|r| r.staged.as_ref()),
+        ) else {
+            return;
+        };
+        match stage::write_back(staged, &launcher.path_map(), &launcher.data_dir) {
+            Ok(Some(bak)) => {
+                self.popup = Some(Popup::Message {
+                    title: "realization.json updated".into(),
+                    body: format!(
+                        "bmi-driver's new variable mappings were applied to config/realization.json.\n\
+                         The previous version is saved as {}.",
+                        bak.display()
+                    ),
+                })
+            }
+            Ok(None) => {}
+            Err(e) => {
+                self.popup = Some(Popup::Message {
+                    title: "Could not update realization.json".into(),
+                    body: format!("{e:#}"),
+                })
+            }
+        }
+    }
+
+    /// Poll a running staging step; on completion start the next step.
+    fn poll_stage(&mut self) {
+        let Some(run) = self.run.as_mut() else { return };
+        let Some(step) = run.steps.get_mut(run.current) else {
+            return;
+        };
+        let Some(job) = step.job.as_ref() else { return };
+        let (done, total) = job.progress.get();
+        if total > 0 {
+            step.progress = Some((done as u64, total as u64));
+        }
+        step.note = Some(format!("staging config files: {done}/{total}"));
+        let res = match job.rx.try_recv() {
+            Err(TryRecvError::Empty) => return,
+            Ok(r) => r,
+            Err(TryRecvError::Disconnected) => Err(anyhow::anyhow!("staging stopped unexpectedly")),
+        };
+        step.job = None;
+        step.elapsed = step.started.map(|s| s.elapsed());
+        match res {
+            Ok(staged) => {
+                step.status = StepStatus::Done;
+                step.note = Some(match &staged {
+                    Some(s) => s.summary(),
+                    None => "nothing to rewrite: bmi-driver uses config/realization.json".into(),
+                });
+                run.staged = staged;
+                run.current += 1;
+                self.advance();
+            }
+            Err(e) => {
+                step.status = StepStatus::Failed(format!("{e:#}"));
+                step.note = Some(format!("staging failed: {e:#}"));
+                Self::skip_rest(run, "previous step failed");
+                self.finish_run();
+            }
+        }
     }
 
     /// Called every loop iteration: pump PTY output, detect step completion.
@@ -513,6 +636,10 @@ impl App {
         let Some(step) = run.steps.get_mut(run.current) else {
             return;
         };
+        if step.job.is_some() {
+            self.poll_stage();
+            return;
+        }
         let Some(proc) = step.proc.as_mut() else {
             return;
         };
@@ -526,16 +653,23 @@ impl App {
         if let Some(status) = proc.finished() {
             step.elapsed = step.started.map(|s| s.elapsed());
             step.awaiting = false;
+            let was_bmi = step.kind == StepKind::Tool(Tool::BmiDriver);
             if status.success() {
                 step.status = StepStatus::Done;
                 if let Some((_, len)) = step.progress {
                     step.progress = Some((len, len));
                 }
                 run.current += 1;
+                if was_bmi {
+                    self.write_back_after_bmi();
+                }
                 self.advance();
             } else {
                 step.status = StepStatus::Failed(format!("exit code {}", status.exit_code()));
                 Self::skip_rest(run, "previous step failed");
+                if was_bmi {
+                    self.write_back_after_bmi();
+                }
                 self.finish_run();
             }
         }
@@ -824,6 +958,27 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// Stage on a background thread so a large domain doesn't freeze the UI.
+fn start_stage(launcher: &Launcher, gpkg: Option<PathBuf>) -> StageJob {
+    let progress = Arc::new(stage::Progress::default());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let map = launcher.path_map();
+    let data = launcher.data_dir.clone();
+    let p = Arc::clone(&progress);
+    std::thread::spawn(move || {
+        let res = (|| {
+            let ids = match gpkg {
+                Some(g) => preflight::divide_ids(&g)
+                    .map_err(|e| anyhow::anyhow!("reading divides from {}: {e}", g.display()))?,
+                None => vec![],
+            };
+            stage::stage(&map, &data, &ids, &p)
+        })();
+        let _ = tx.send(res);
+    });
+    StageJob { progress, rx }
 }
 
 fn scroll_view(run: &mut RunState, delta: isize) {

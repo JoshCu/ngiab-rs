@@ -392,6 +392,7 @@ fn draw_run(f: &mut Frame, area: Rect, app: &mut App) {
         let unit = match step.kind {
             StepKind::Tool(crate::backend::Tool::BmiDriver) => " catchments",
             StepKind::Tool(crate::backend::Tool::RsRoute) => " nodes",
+            StepKind::Stage => " files",
             StepKind::Pull => "",
         };
         let color = match step.status {
@@ -444,9 +445,10 @@ fn draw_run(f: &mut Frame, area: Rect, app: &mut App) {
     match &step.proc {
         Some(p) => f.render_widget(TermView { screen: p.screen() }, inner),
         None => {
-            let msg = match &step.status {
-                StepStatus::Skipped(e) => format!("skipped: {e}"),
-                StepStatus::Failed(e) => format!("failed to start: {e}"),
+            let msg = match (&step.note, &step.status) {
+                (Some(n), _) => n.clone(),
+                (_, StepStatus::Skipped(e)) => format!("skipped: {e}"),
+                (_, StepStatus::Failed(e)) => format!("failed to start: {e}"),
                 _ => "waiting…".into(),
             };
             f.render_widget(Paragraph::new(msg).fg(DIM), inner);

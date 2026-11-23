@@ -12,7 +12,10 @@ pub const TROUTE_OUTPUT_DIR: &str = "outputs/troute";
 
 #[derive(Debug, Clone)]
 pub struct Module {
+    /// `model_type_name` (e.g. `CFE`), else the adapter name.
     pub name: String,
+    /// The BMI adapter, the `name` field (`bmi_c`, `bmi_fortran`, `bmi_python`, ...).
+    pub adapter: Option<String>,
     pub library_file: Option<String>,
     pub init_config: Option<String>,
 }
@@ -62,10 +65,10 @@ impl Realization {
                 let params = &f["params"];
                 let mods = params["modules"].as_array().cloned().unwrap_or_default();
                 if mods.is_empty() {
-                    modules.push(module_from(params));
+                    modules.push(module_from(params, &f["name"]));
                 } else {
                     for m in &mods {
-                        modules.push(module_from(&m["params"]));
+                        modules.push(module_from(&m["params"], &m["name"]));
                     }
                 }
             }
@@ -87,12 +90,20 @@ impl Realization {
     }
 }
 
-fn module_from(p: &Value) -> Module {
+/// One module's params; `outer_name` is the `name` next to `params` (the adapter).
+fn module_from(p: &Value, outer_name: &Value) -> Module {
     let s = |k: &str| p[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let adapter = s("name").or_else(|| {
+        outer_name
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    });
     Module {
         name: s("model_type_name")
-            .or_else(|| s("name"))
+            .or_else(|| adapter.clone())
             .unwrap_or_else(|| "?".into()),
+        adapter,
         library_file: s("library_file"),
         init_config: s("init_config"),
     }
@@ -171,6 +182,7 @@ mod tests {
         assert_eq!(r.output_interval, 3600);
         assert_eq!(r.modules.len(), 1);
         assert_eq!(r.modules[0].name, "lstm");
+        assert_eq!(r.modules[0].adapter.as_deref(), Some("bmi_c"));
         assert_eq!(r.forcing_path.as_deref(), Some("./forcings/forcings.nc"));
         let _ = std::fs::remove_dir_all(dir);
     }
