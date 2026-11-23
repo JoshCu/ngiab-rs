@@ -478,21 +478,52 @@ fn check_relative(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The normal components of a relative archive path, as a lookup key. Lowercased,
+/// so that on a case-insensitive file system `A/x` still counts as inside the
+/// symlink `a` (this only makes the check stricter).
+fn path_key(parts: &[&std::ffi::OsStr]) -> String {
+    parts
+        .iter()
+        .map(|p| p.to_string_lossy().to_lowercase())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Does `target`, resolved relative to the directory `base` (itself relative to the
-/// extraction root), stay inside the root? Purely lexical.
-fn link_stays_inside(base: &Path, target: &Path) -> bool {
-    let mut depth: usize = base
+/// extraction root), stay inside the root? Lexical, so it refuses to resolve
+/// through any of the archive's own `symlinks` (keys from [`path_key`]): once a
+/// component is a symlink, `..` after it no longer means what it says. With
+/// `final_may_be_symlink` false (hard links), the target itself must not be a
+/// symlink either, because a hard link to a relative symlink re-anchors it.
+fn link_stays_inside(
+    base: &Path,
+    target: &Path,
+    symlinks: &std::collections::HashSet<String>,
+    final_may_be_symlink: bool,
+) -> bool {
+    let mut stack: Vec<&std::ffi::OsStr> = base
         .components()
-        .filter(|c| matches!(c, Component::Normal(_)))
-        .count();
-    for c in target.components() {
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    let comps: Vec<Component> = target.components().collect();
+    for (i, c) in comps.iter().enumerate() {
         match c {
-            Component::Normal(_) => depth += 1,
+            Component::Normal(n) => {
+                stack.push(n);
+                let last = i + 1 == comps.len();
+                if (!last || !final_may_be_symlink) && symlinks.contains(&path_key(&stack)) {
+                    return false;
+                }
+            }
             Component::CurDir => {}
-            Component::ParentDir => match depth.checked_sub(1) {
-                Some(d) => depth = d,
-                None => return false,
-            },
+            Component::ParentDir => {
+                if stack.pop().is_none() {
+                    return false;
+                }
+            }
             Component::RootDir | Component::Prefix(_) => return false,
         }
     }
@@ -505,14 +536,19 @@ fn open_tar_gz(archive: &Path) -> Result<tar::Archive<flate2::read::GzDecoder<Fi
 }
 
 /// Checks every entry of a `.tar.gz` before anything is written: paths must be
-/// relative without `..`, links must point inside the archive, and only regular
-/// files, directories, symlinks and hard links are allowed.
+/// relative without `..` and must not lead through one of the archive's symlinks,
+/// links must point inside the archive (without resolving through another
+/// symlink), and only regular files, directories, symlinks and hard links are
+/// allowed.
 fn check_tar_gz(archive: &Path) -> Result<()> {
     use tar::EntryType;
     let mut ar = open_tar_gz(archive)?;
     let entries = ar
         .entries()
         .with_context(|| format!("reading {}", archive.display()))?;
+    // First pass: per-entry checks, and collect the symlinks.
+    let mut checked: Vec<(PathBuf, EntryType, Option<PathBuf>)> = Vec::new();
+    let mut symlinks = std::collections::HashSet::new();
     for entry in entries {
         let entry = entry.with_context(|| format!("reading {}", archive.display()))?;
         let path = entry.path()?.into_owned();
@@ -520,31 +556,53 @@ fn check_tar_gz(archive: &Path) -> Result<()> {
         match kind {
             EntryType::XGlobalHeader | EntryType::XHeader => continue,
             EntryType::Regular | EntryType::Continuous | EntryType::Directory => {
-                check_relative(&path)?
+                check_relative(&path)?;
+                checked.push((path, kind, None));
             }
             EntryType::Symlink | EntryType::Link => {
                 check_relative(&path)?;
                 let target = entry
                     .link_name()?
-                    .with_context(|| format!("link {} has no target", path.display()))?;
-                // Symlinks resolve against their own directory, hard links against
-                // the archive root.
-                let base = if kind == EntryType::Symlink {
-                    path.parent().unwrap_or(Path::new(""))
-                } else {
-                    Path::new("")
-                };
-                ensure!(
-                    link_stays_inside(base, &target),
-                    "archive link {} -> {} points outside the archive",
-                    path.display(),
-                    target.display()
-                );
+                    .with_context(|| format!("link {} has no target", path.display()))?
+                    .into_owned();
+                if kind == EntryType::Symlink {
+                    let parts: Vec<_> = path.iter().filter(|p| *p != ".").collect();
+                    symlinks.insert(path_key(&parts));
+                }
+                checked.push((path, kind, Some(target)));
             }
             other => bail!(
                 "archive entry {} has an unsupported type {other:?}",
                 path.display()
             ),
+        }
+    }
+    // Second pass: nothing is written through a symlink, and links stay inside.
+    for (path, kind, target) in &checked {
+        let parts: Vec<_> = path.iter().filter(|p| *p != ".").collect();
+        for n in 1..parts.len() {
+            ensure!(
+                !symlinks.contains(&path_key(&parts[..n])),
+                "archive entry {} is inside the symlink {}",
+                path.display(),
+                parts[..n].iter().collect::<PathBuf>().display()
+            );
+        }
+        if let Some(target) = target {
+            // Symlinks resolve against their own directory, hard links against
+            // the archive root.
+            let symlink = *kind == EntryType::Symlink;
+            let base = if symlink {
+                path.parent().unwrap_or(Path::new(""))
+            } else {
+                Path::new("")
+            };
+            ensure!(
+                link_stays_inside(base, target, &symlinks, symlink),
+                "archive link {} -> {} points outside the archive (or through a symlink)",
+                path.display(),
+                target.display()
+            );
         }
     }
     Ok(())
@@ -789,15 +847,23 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  empty.txt
     #[test]
     fn link_containment() {
         let p = Path::new;
-        assert!(link_stays_inside(
-            p("dmod/shared_libs"),
-            p("libcfebmi.so.1.0")
-        ));
-        assert!(link_stays_inside(p("a/b"), p("../c/./d")));
-        assert!(link_stays_inside(p("a/b"), p("../../x")));
-        assert!(!link_stays_inside(p("a/b"), p("../../../x")));
-        assert!(!link_stays_inside(p(""), p("../x")));
-        assert!(!link_stays_inside(p("a"), p("/etc/passwd")));
+        let none = std::collections::HashSet::new();
+        let inside = |b, t| link_stays_inside(p(b), p(t), &none, true);
+        assert!(inside("dmod/shared_libs", "libcfebmi.so.1.0"));
+        assert!(inside("a/b", "../c/./d"));
+        assert!(inside("a/b", "../../x"));
+        assert!(!inside("a/b", "../../../x"));
+        assert!(!inside("", "../x"));
+        assert!(!inside("a", "/etc/passwd"));
+
+        // `a/l` is a symlink: never resolve through it; ending on it is fine for
+        // a symlink but not for a hard link.
+        let links: std::collections::HashSet<String> = ["a/l".to_string()].into();
+        assert!(!link_stays_inside(p(""), p("a/l/../x"), &links, true));
+        assert!(!link_stays_inside(p("a"), p("L/x"), &links, true));
+        assert!(link_stays_inside(p("a"), p("l"), &links, true));
+        assert!(!link_stays_inside(p(""), p("a/l"), &links, false));
+        assert!(link_stays_inside(p(""), p("a/x"), &links, false));
     }
 
     #[test]
@@ -869,6 +935,42 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  empty.txt
                 "outside",
             ),
             ("fifo", vec![("p", Fifo, None, b"")], "unsupported"),
+            // Each link stays inside lexically, but `a/b` is the root itself, so
+            // `a/b/c -> ..` is the root's parent.
+            (
+                "symlink-chain",
+                vec![
+                    ("a/", Directory, None, b""),
+                    ("a/b", Symlink, Some(".."), b""),
+                    ("a/b/c", Symlink, Some(".."), b""),
+                ],
+                "inside the symlink",
+            ),
+            (
+                "write-through-symlink",
+                vec![("a", Symlink, Some("."), b""), ("a/f", Regular, None, b"x")],
+                "inside the symlink",
+            ),
+            (
+                "target-through-symlink",
+                vec![
+                    ("a/", Directory, None, b""),
+                    ("a/b", Symlink, Some(".."), b""),
+                    ("x", Symlink, Some("a/b/../.."), b""),
+                ],
+                "outside",
+            ),
+            // A hard link to a relative symlink re-anchors it: `h -> ../x` from
+            // the root.
+            (
+                "hardlink-to-symlink",
+                vec![
+                    ("a/", Directory, None, b""),
+                    ("a/l", Symlink, Some("../x"), b""),
+                    ("h", Link, Some("a/l"), b""),
+                ],
+                "outside",
+            ),
         ];
         for (name, entries, want) in cases {
             // A harmless first entry proves nothing is written before the check.
