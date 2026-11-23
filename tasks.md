@@ -106,7 +106,7 @@ This plan merges the old `install+ci.md` (installers, cross-platform releases, s
   - `build.rs` emits `NGIAB_TARGET`.
   - Add a `LICENSE` file.
   - `TOOL_VERSIONS` pins `bmi-driver` and `rs_route` for both the Dockerfile and install.sh, installed with `cargo install --version X --locked`.
-  - A local build needs only `cc`, `cmake` and `make`.
+  - A local build needs only `cc`, `cmake` and `make`. _(P1 finding: rs_route 0.3.1's build.rs also compiles a Fortran kernel with `gfortran`, so building rs_route needs gfortran; the Dockerfile build stage installs gcc-gfortran. install.sh (B.5) must account for this.)_
 - **Self-update** uses the `self-replace` crate. On Windows, stale `*.old` files are cleaned up at startup.
 - **TUI plumbing:** one "suspend TUI → run closure → resume" helper in `main.rs`, which also toggles mouse capture. The shell, the installer and the `rfd` dialog all use it.
 - **Eval files:**
@@ -151,7 +151,7 @@ These are minor and don't block anything. Defaults are given in brackets.
 - **Observation resampling.** [hourly mean of instantaneous values over (t−1h, t]] (D.8)
 - **KGE variant.** [2009, which matches the existing Python tool] (D.9)
 - **NWM retrospective overlay** from `eval/nwm_cache`: in scope? [no] (D)
-- **Initial `NGIAB_BASE` tag** to pin, e.g. `awiciroh/ngiab:v2.1.0`. Check what's current when starting A.1.
+- ~~**Initial `NGIAB_BASE` tag**~~ Resolved in P1: pinned `awiciroh/ngiab:v2.1.0`, the highest `vX.Y.Z` tag on Docker Hub on 2026-11-23 (pushed 2026-10-28, amd64+arm64, same push as `:latest`).
 - **Repo slug** once the remote exists.
 
 ---
@@ -170,19 +170,19 @@ There are two hand-written workflows, one per release stream:
 There is no PR-check workflow. It is optional (A.8).
 
 ### A.1 Prerequisites in the code (before the first tag)
-- [ ] Do the Windows `cfg(unix)` port (C.6). The Windows leg cannot compile without it.
-- [ ] Add `build.rs`, which emits `cargo:rustc-env=NGIAB_TARGET={TARGET}`. `self update` uses `env!("NGIAB_TARGET")` to pick its asset.
-- [ ] Add a `LICENSE` file. It goes into every binary archive.
-- [ ] Pin the default image to `docker.io/joshcu/ngiab-rs:{CARGO_PKG_VERSION}` (`concat!("docker.io/joshcu/ngiab-rs:", env!("CARGO_PKG_VERSION"))`).
+- [x] Do the Windows `cfg(unix)` port (C.6). The Windows leg cannot compile without it. _(`cargo xwin check --target x86_64-pc-windows-msvc --all-targets` and `cargo check --target x86_64-pc-windows-gnu --all-targets` pass)_
+- [x] Add `build.rs`, which emits `cargo:rustc-env=NGIAB_TARGET={TARGET}`. `self update` uses `env!("NGIAB_TARGET")` to pick its asset.
+- [x] Add a `LICENSE` file. It goes into every binary archive. _(MIT, Copyright (c) 2026 Alabama Water Institute)_
+- [x] Pin the default image to `docker.io/joshcu/ngiab-rs:{CARGO_PKG_VERSION}` (`concat!("docker.io/joshcu/ngiab-rs:", env!("CARGO_PKG_VERSION"))`). _(`backend::DEFAULT_IMAGE`)_
   - Change `src/main.rs:42` and `src/backend.rs:407`.
   - Update the test at `src/backend.rs:435`.
-- [ ] Dockerfile changes:
+- [x] Dockerfile changes: _(pinned `awiciroh/ngiab:v2.1.0`. Deviations: the runtime stage is `rockylinux:9.1-minimal` because the full `rockylinux:9.1` ships python3 for dnf; the build stage needs `gcc-gfortran` for rs_route. Tool versions are `ARG`s whose defaults a unit test checks against TOOL_VERSIONS.)_
   - **Pin the base.** Put `ARG NGIAB_BASE=awiciroh/ngiab:<tag>` before the first `FROM`, then add `FROM ${NGIAB_BASE} AS ngiab`. The build stage becomes `FROM ngiab AS build`, and every runtime copy uses `COPY --from=ngiab …`. Build args are not expanded inside `COPY --from`, which is why the named stage is needed.
   - **Drop Python** (user decision). Remove `python3.11` from the runtime `dnf install` and keep `libgfortran attr`.
   - **Prune the LSTM copy to the weights.** Use `COPY --from=ngiab /ngen/ngen/extern/lstm/trained_neuralhydrology_models /ngen/ngen/extern/lstm/trained_neuralhydrology_models`.
   - **Pin the tool versions.** Read them from `TOOL_VERSIONS` via `--build-arg`, or `COPY TOOL_VERSIONS` and `source` it. Then `cargo install bmi-driver --version $BMI_DRIVER_VERSION --locked --features static`, and the same for `rs_route`.
-- [ ] Add a `TOOL_VERSIONS` file (shell-sourceable `KEY=value`) at the repo root, e.g. `BMI_DRIVER_VERSION=0.2.1` and `RS_ROUTE_VERSION=…`. The Dockerfile and install.sh both read it, and CI passes it as build args.
-- [ ] **Acceptance:**
+- [x] Add a `TOOL_VERSIONS` file (shell-sourceable `KEY=value`) at the repo root, e.g. `BMI_DRIVER_VERSION=0.2.1` and `RS_ROUTE_VERSION=…`. The Dockerfile and install.sh both read it, and CI passes it as build args. _(bmi-driver 0.2.1, rs_route 0.3.1: the newest on crates.io)_
+- [ ] **Acceptance:** _(partial. Done: `cargo xwin check --target x86_64-pc-windows-msvc --all-targets` passes (without `static`); `cargo build --release --locked --features static` passes on Linux (inside the docker build); `docker build .` gives a 177 MB image with no python3 that ran a 31-catchment Rust LSTM realization plus rs-route via `ngiab-rs /data --auto`. Not done: macOS needs a Mac/CI. A Windows `--features static` check could not run here: under cargo-xwin, hdf5-metno-src needs `ninja` (not installed); with mingw, hdf5 built but netcdf-src needs `x86_64-w64-mingw32-g++` (not installed). That is left to the Windows CI leg.)_
   - `cargo check --target x86_64-pc-windows-msvc` passes.
   - `cargo build --release --features static` passes on Linux and macOS.
   - `docker build .` still produces a working image: an LSTM realization still runs in it, and `python3` is absent.
@@ -387,10 +387,10 @@ Facts relied on, checked against the code:
   - `.lock`
 
 ### B.1 Filesystem layout (`src/home.rs`, first)
-- [ ] `ngiab_home()`: `$NGIAB_HOME`, else `dirs::home_dir()/.ngiab`.
-- [ ] `container_dir()`, `container_bak_dir()`, `container_new_dir()`, `container_tmp_dir()`, `install_json()`, `lock_path()`.
-- [ ] `preprocessor_file()` always returns `dirs::home_dir()/.ngiab/preprocessor` and ignores `NGIAB_HOME`. Used by D.1.
-- [ ] Layout:
+- [x] `ngiab_home()`: `$NGIAB_HOME`, else `dirs::home_dir()/.ngiab`.
+- [x] `container_dir()`, `container_bak_dir()`, `container_new_dir()`, `container_tmp_dir()`, `install_json()`, `lock_path()`.
+- [x] `preprocessor_file()` always returns `dirs::home_dir()/.ngiab/preprocessor` and ignores `NGIAB_HOME`. Used by D.1.
+- [x] Layout:
   ```
   ~/.ngiab/
     install.json        # written by ngiab-rs (installer calls `ngiab-rs backend record`)
@@ -403,7 +403,7 @@ Facts relied on, checked against the code:
     container.bak/      # previous container/ (one level of undo)
     preprocessor, hydrofabric/, ...   # owned by NGIAB_data_preprocess - never touched
   ```
-- [ ] `install.json` (`struct InstallInfo`, serde):
+- [x] `install.json` (`struct InstallInfo`, serde): _(`bin_path` is `Option<PathBuf>`; `save()` writes atomically)_
   ```json
   {"schema":1,"ngiab_rs_version":"0.2.0","target":"x86_64-unknown-linux-gnu",
    "bin_path":"/home/u/.local/bin/ngiab-rs","install_method":"installer",
@@ -411,7 +411,7 @@ Facts relied on, checked against the code:
   ```
   - `install_method` is one of `installer`, `cargo` or `container`.
   - `load()` treats a missing or unreadable file as default, the same way `config::State` does.
-- [ ] **Acceptance:** unit tests check that `NGIAB_HOME` is honoured, that `preprocessor_file()` ignores it, and that `InstallInfo` round-trips (including the missing-file default).
+- [x] **Acceptance:** unit tests check that `NGIAB_HOME` is honoured, that `preprocessor_file()` ignores it, and that `InstallInfo` round-trips (including the missing-file default).
 
 ### B.2 CLI restructure (`src/cli.rs`, `src/main.rs`)
 Land this before any other change adds flags.
@@ -807,7 +807,7 @@ Decision: rewrite the configs into a staging copy and pass `--config` to bmi-dri
 - [ ] **C.3.5** `stage()` does nothing for container backends or when nothing needs rewriting. In that case run without `--config`, so the command line is the same as today.
 
 ### C.4 Command construction: env and `--config`
-- [ ] Add `pub env: Vec<(String, String)>` to `CommandSpec` (`backend.rs:140`).
+- [x] Add `pub env: Vec<(String, String)>` to `CommandSpec` (`backend.rs:140`). _(plus `CommandSpec::new` and `to_command()`; display shell-quotes values)_
   - Apply it in `pty.rs:46`, `auto.rs:58` and `run_shell` (`main.rs:155-178`).
   - `CommandSpec::display` (`backend.rs:148`) prints `K=V` first, so the command can be copy-pasted.
 - [ ] Local `Tool::BmiDriver` in `Launcher::tool_command` (`backend.rs:185-193`) sets:
@@ -843,26 +843,26 @@ Decision: rewrite the configs into a staging copy and pass `--config` to bmi-dri
 ### C.6 Windows port: every Unix-only call site
 This is needed for the native Windows binary, which uses docker/podman only. `cargo build --target x86_64-pc-windows-msvc` must pass.
 
-- [ ] **Cargo.toml**: move `libc` to `[target.'cfg(unix)'.dependencies]`.
-- [ ] **`main.rs:102`**: `SIGHUP` doesn't exist on Windows. Use `#[cfg(unix)]` for the three-signal array and `#[cfg(windows)]` for `[SIGTERM, SIGINT]`.
-- [ ] **`backend.rs:356-375` (`find_executable`)**:
+- [x] **Cargo.toml**: move `libc` to `[target.'cfg(unix)'.dependencies]`.
+- [x] **`main.rs:102`**: `SIGHUP` doesn't exist on Windows. Use `#[cfg(unix)]` for the three-signal array and `#[cfg(windows)]` for `[SIGTERM, SIGINT]`.
+- [x] **`backend.rs:356-375` (`find_executable`)**:
   - The `PermissionsExt` mode check becomes `#[cfg(unix)]`.
   - On Windows, try `name` plus each `PATHEXT` extension and check `is_file()`.
   - `/usr/local/bin` becomes `cfg(unix)`.
   - `~/.cargo/bin` stays on all platforms.
-- [ ] **`backend.rs:270-272` (`user_args`)**: `libc::getuid`/`getgid` becomes `cfg(unix)`. On Windows return `vec![]`.
-- [ ] **`backend.rs:323` (`libc::geteuid`)**: becomes `cfg(unix)`. On Windows use only `"rootless":true`.
-- [ ] **`backend.rs:290-292` (`selinux_enforcing`)**: gate with `cfg(target_os="linux")`.
-- [ ] **`backend.rs:71-73`**: move the in-container check into a free function, `in_container()`, which B.3 also uses. Gate it with `cfg(unix)`.
-- [ ] **`backend.rs:241-244` (local `shell_command`)**: on Windows use `%COMSPEC%`, falling back to `powershell.exe`.
-- [ ] **`backend.rs:251-258` (`mount_args`)**:
+- [x] **`backend.rs:270-272` (`user_args`)**: `libc::getuid`/`getgid` becomes `cfg(unix)`. On Windows return `vec![]`.
+- [x] **`backend.rs:323` (`libc::geteuid`)**: becomes `cfg(unix)`. On Windows use only `"rootless":true`.
+- [x] **`backend.rs:290-292` (`selinux_enforcing`)**: gate with `cfg(target_os="linux")`.
+- [x] **`backend.rs:71-73`**: move the in-container check into a free function, `in_container()`, which B.3 also uses. Gate it with `cfg(unix)`. _(`backend::in_container()`; returns false on non-unix)_
+- [x] **`backend.rs:241-244` (local `shell_command`)**: on Windows use `%COMSPEC%`, falling back to `powershell.exe`.
+- [ ] **`backend.rs:251-258` (`mount_args`)**: _(partial: a `\\?\` prefix is stripped from the source. Not done: checking Docker Desktop and podman machine needs Windows hardware)_
   - The Windows source is `C:\Users\...`. Check that this works with Docker Desktop and with podman machine.
   - Never pass a `\\?\` path. Use `std::path::absolute`, which `main.rs:71` and `app.rs:229` already do.
-- [ ] **`preflight.rs:82-86`**: replaced by the string logic in `paths.rs` (C.2).
-- [ ] **`plan.rs:30,38`**: the `/` joins are only correct for container roots. Add `debug_assert!(kind.is_container() || cfg!(unix))`.
-- [ ] **`app.rs:600-630` (`complete_path`)**: splits on `/` only. This is superseded by the picker rework in D.2. If it is kept, also split on `MAIN_SEPARATOR` and accept `~\` at `app.rs:220`.
-- [ ] **`pty.rs:352,369` tests**: mark `#[cfg(unix)]`. Add a Windows smoke test (`cmd /C echo hello`); portable-pty uses ConPTY there.
-- [ ] **Platform constant**:
+- [ ] **`preflight.rs:82-86`**: replaced by the string logic in `paths.rs` (C.2). _(not done: belongs to C.2 `paths.rs`)_
+- [x] **`plan.rs:30,38`**: the `/` joins are only correct for container roots. Add `debug_assert!(kind.is_container() || cfg!(unix))`. _(the assert is in `plan::command_for`, where the backend kind is known)_
+- [x] **`app.rs:600-630` (`complete_path`)**: splits on `/` only. This is superseded by the picker rework in D.2. If it is kept, also split on `MAIN_SEPARATOR` and accept `~\` at `app.rs:220`. _(kept; it now splits on `/` and `MAIN_SEPARATOR` and accepts `~\`)_
+- [x] **`pty.rs:352,369` tests**: mark `#[cfg(unix)]`. Add a Windows smoke test (`cmd /C echo hello`); portable-pty uses ConPTY there. _(the Windows test compiles but has not been run on Windows)_
+- [x] **Platform constant**: _(`backend::LOCAL_SUPPORTED`. Exception: local probes still run when `in_container()`, because inside our own image (arm64 included) the tools and `/dmod` are native)_
   ```rust
   pub const LOCAL_SUPPORTED: bool = cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"));
   ```
