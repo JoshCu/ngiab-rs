@@ -1,0 +1,7 @@
+# Pinned versions of the tools ngiab-rs drives. Shell-sourceable KEY=value.
+# Read by the Dockerfile (as --build-arg defaults, kept in sync by hand / CI),
+# install.sh and the release workflows. Installed with:
+#   cargo install bmi-driver --version "$BMI_DRIVER_VERSION" --locked --features static
+#   cargo install rs_route   --version "$RS_ROUTE_VERSION"   --locked --features static
+BMI_DRIVER_VERSION=0.2.1
+RS_ROUTE_VERSION=0.3.1
