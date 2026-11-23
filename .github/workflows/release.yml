@@ -1,0 +1,415 @@
+# Binary release: ngiab-rs for Linux x86_64 (manylinux_2_28), macOS (arm64 and
+# x86_64) and Windows x86_64, the installers, SHA256SUMS, and the multi-arch
+# Docker image docker.io/joshcu/ngiab-rs:X.Y.Z (+ X.Y and latest for stable
+# releases).
+#
+# Release: bump Cargo.toml version, `cargo update -p ngiab-rs --offline`,
+# commit "release vX.Y.Z", `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+# A tag containing "-" (e.g. v0.2.0-rc1) is published as a prerelease and does
+# not move `latest` (GitHub release or Docker tag).
+#
+# workflow_dispatch with dry_run=true builds and tests everything and uploads
+# workflow artifacts, but creates no release and pushes no image.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: build and upload workflow artifacts only (no release, no image push)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: docker.io/joshcu/ngiab-rs
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag against Cargo.toml
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          DRY_INPUT: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "ngiab-rs") | .version')
+          [ -n "$version" ] || { echo "::error::could not read the crate version"; exit 1; }
+
+          dry=false
+          if [ "$EVENT" = workflow_dispatch ] && [ "$DRY_INPUT" = true ]; then dry=true; fi
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+              exit 1
+            fi
+          elif [ "$dry" != true ]; then
+            echo "::error::a non-dry run must be started from a v* tag (got $GITHUB_REF)"
+            exit 1
+          fi
+
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "dry_run=$dry"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version prerelease=$prerelease dry_run=$dry"
+
+  build:
+    needs: check-version
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            # glibc 2.28, so the binary runs on RHEL/Rocky 8+ (HPC).
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            exe: ""
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            container: ""
+            exe: ""
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            container: ""
+            exe: ""
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            container: ""
+            exe: .exe
+            archive: zip
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Guards against CMake 4.x rejecting old cmake_minimum_required() calls
+      # in the bundled HDF5/netCDF sources.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - name: Prepare manylinux container
+        if: matrix.container != ''
+        run: |
+          set -euo pipefail
+          command -v cmake || dnf install -y cmake
+          for t in tar gzip sha256sum curl git; do command -v "$t"; done
+          cmake --version
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # The non-static build would need a system netCDF, so tests use the same
+      # static release build as the shipped binary (and share its compiled
+      # dependencies with the build step below).
+      - name: Test
+        run: cargo test --release --locked --features static --target "$TARGET"
+
+      - name: Build
+        run: cargo build --release --locked --features static --target "$TARGET"
+
+      - name: Set up MSVC tools (dumpbin)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Link check
+        run: sh scripts/check-linkage.sh "$TARGET" "target/$TARGET/release/ngiab-rs${{ matrix.exe }}"
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          out=$("target/$TARGET/release/ngiab-rs${{ matrix.exe }}" --version)
+          echo "$out"
+          case "$out" in
+            *" $VERSION"*) ;;
+            *) echo "::error::--version printed '$out', expected $VERSION"; exit 1 ;;
+          esac
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p pkg out
+          cp "target/$TARGET/release/ngiab-rs${{ matrix.exe }}" README.md LICENSE pkg/
+          name="ngiab-rs-$TARGET.${{ matrix.archive }}"
+          if [ "${{ matrix.archive }}" = zip ]; then
+            (cd pkg && 7z a -tzip "../out/$name" "ngiab-rs${{ matrix.exe }}" README.md LICENSE)
+          else
+            tar -C pkg -czf "out/$name" "ngiab-rs${{ matrix.exe }}" README.md LICENSE
+          fi
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+
+  docker:
+    needs: check-version
+    name: docker (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners: static HDF5/netCDF under QEMU takes hours.
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    env:
+      DRY_RUN: ${{ needs.check-version.outputs.dry_run }}
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          large-packages: false
+          swap-storage: false
+
+      - uses: actions/checkout@v4
+
+      - name: Build args from TOOL_VERSIONS
+        id: args
+        run: |
+          set -euo pipefail
+          {
+            echo "build_args<<EOF"
+            grep -E '^[A-Z_]+=' TOOL_VERSIONS
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          grep -E '^[A-Z_]+=' TOOL_VERSIONS
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: env.DRY_RUN != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build (load for smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ steps.args.outputs.build_args }}
+          load: true
+          tags: ngiab-rs:smoke
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm ngiab-rs:smoke --version)
+          echo "$out"
+          case "$out" in
+            *" $VERSION"*) ;;
+            *) echo "::error::--version printed '$out', expected $VERSION"; exit 1 ;;
+          esac
+          for tool in bmi-driver rs-route; do
+            docker run --rm --entrypoint "/usr/local/bin/$tool" ngiab-rs:smoke --version
+          done
+          if docker run --rm --entrypoint sh ngiab-rs:smoke -c 'command -v python3'; then
+            echo "::error::python3 must not be in the image"
+            exit 1
+          fi
+
+      - name: Push by digest
+        id: build
+        if: env.DRY_RUN != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ steps.args.outputs.build_args }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+
+      - name: Export digest
+        if: env.DRY_RUN != 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: env.DRY_RUN != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-merge:
+    needs: [check-version, docker]
+    if: needs.check-version.outputs.dry_run != 'true'
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+      PRERELEASE: ${{ needs.check-version.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          # Docker tags have no "v" prefix: they match CARGO_PKG_VERSION, which
+          # is what the binary pulls by default. Prereleases get only X.Y.Z.
+          tags=(-t "$IMAGE:$VERSION")
+          if [ "$PRERELEASE" != true ]; then
+            tags+=(-t "$IMAGE:${VERSION%.*}" -t "$IMAGE:latest")
+          fi
+          sources=()
+          for d in *; do sources+=("$IMAGE@sha256:$d"); done
+          [ "${#sources[@]}" -eq 2 ] || { echo "::error::expected 2 digests, got ${#sources[@]}"; exit 1; }
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Inspect
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          platforms=$(docker buildx imagetools inspect --raw "$IMAGE:$VERSION" |
+            jq -r '.manifests[].platform | "\(.os)/\(.architecture)"')
+          for p in linux/amd64 linux/arm64; do
+            grep -qx "$p" <<<"$platforms" || { echo "::error::$p missing from $IMAGE:$VERSION"; exit 1; }
+          done
+
+      - name: Smoke test (amd64)
+        run: docker run --rm "$IMAGE:$VERSION" --version
+
+  release:
+    needs: [check-version, build, docker, docker-merge]
+    # Also runs on dry runs (docker-merge skipped) to assemble and upload dist/.
+    if: >-
+      always() &&
+      needs.check-version.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.docker.result == 'success' &&
+      (needs.docker-merge.result == 'success' ||
+       (needs.check-version.outputs.dry_run == 'true' && needs.docker-merge.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    env:
+      DRY_RUN: ${{ needs.check-version.outputs.dry_run }}
+      PRERELEASE: ${{ needs.check-version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+
+      - name: Assemble dist/ and SHA256SUMS
+        run: |
+          set -euo pipefail
+          for f in install.sh install.ps1; do
+            if [ -f "$f" ]; then
+              cp "$f" dist/
+            elif [ "$DRY_RUN" = true ]; then
+              echo "::warning::$f is missing from the repo (required for a real release)"
+            else
+              echo "::error::$f is missing from the repo"
+              exit 1
+            fi
+          done
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          expected="ngiab-rs-x86_64-unknown-linux-gnu.tar.gz ngiab-rs-aarch64-apple-darwin.tar.gz
+            ngiab-rs-x86_64-apple-darwin.tar.gz ngiab-rs-x86_64-pc-windows-msvc.zip SHA256SUMS"
+          [ "$DRY_RUN" = true ] || expected="$expected install.sh install.ps1"
+          for f in $expected; do
+            [ -f "$f" ] || { echo "::error::missing asset $f"; exit 1; }
+          done
+          ls -l
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Create draft release
+        if: env.DRY_RUN != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: true
+          prerelease: ${{ needs.check-version.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.check-version.outputs.prerelease == 'true' && 'false' || 'true' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
+
+      - name: Publish release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$PRERELEASE" = true ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
