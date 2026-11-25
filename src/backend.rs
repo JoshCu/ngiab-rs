@@ -53,7 +53,7 @@ fn probe_local(local_supported: bool, in_own_image: bool) -> bool {
     local_supported || in_own_image
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, clap::ValueEnum)]
 pub enum BackendKind {
     Local,
     Docker,

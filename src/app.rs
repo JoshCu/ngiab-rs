@@ -3,11 +3,13 @@
 use crate::backend::{Availability, BackendKind, Detected, Launcher, Tool};
 use crate::config::{Realization, State, TROUTE_OUTPUT_DIR};
 use crate::eval::EvalState;
+use crate::installer::{self, Offer};
 use crate::plan::{self, RunOptions, StepKind};
 use crate::preflight::{self, Preflight};
 use crate::pty::{PtyProcess, awaiting_answer, parse_progress};
 use crate::stage::{self, Staged};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -35,6 +37,13 @@ pub enum Popup {
         plan: Vec<StepKind>,
     },
     ConfirmCancel,
+    /// "Set up the missing backend now?" (B.7): the installer or `models update`.
+    OfferSetup(Offer),
+    /// Checkbox list of backends to install.
+    PickBackends {
+        items: Vec<(BackendKind, bool)>,
+        cursor: usize,
+    },
     Message {
         title: String,
         body: String,
@@ -50,6 +59,7 @@ pub enum MenuItem {
     Evaluate,
     Preflight,
     Pull,
+    InstallBackend,
     Shell,
     ChangeFolder,
     Quit,
@@ -64,6 +74,7 @@ impl MenuItem {
             MenuItem::Evaluate => "Evaluate outputs",
             MenuItem::Preflight => "Re-run preflight checks",
             MenuItem::Pull => "Pull / update container image",
+            MenuItem::InstallBackend => "Install backend…",
             MenuItem::Shell => "Open a shell in the data folder",
             MenuItem::ChangeFolder => "Change data folder",
             MenuItem::Quit => "Quit",
@@ -135,6 +146,15 @@ pub struct App {
     pub popup: Option<Popup>,
     pub quit: bool,
     pub want_shell: bool,
+    /// Run the installer for these backends (main.rs suspends the TUI for it).
+    pub want_installer: Option<Vec<BackendKind>>,
+    /// Run `models update` in-process (main.rs suspends the TUI for it).
+    pub want_models_update: bool,
+    /// Backends whose setup offer was declined: not offered again this session
+    /// (the menu's "Install backend…" still works).
+    pub declined_install: HashSet<BackendKind>,
+    /// Setup offers need a terminal on stdin and stdout (B.7).
+    pub can_prompt: bool,
 
     pub data_dir: Option<PathBuf>,
     pub path_input: String,
@@ -171,6 +191,10 @@ impl App {
             popup: None,
             quit: false,
             want_shell: false,
+            want_installer: None,
+            want_models_update: false,
+            declined_install: HashSet::new(),
+            can_prompt: false,
             data_dir: None,
             path_input: state
                 .last_path
@@ -224,6 +248,9 @@ impl App {
         ];
         if self.backend.is_some_and(BackendKind::is_container) {
             v.push(MenuItem::Pull);
+        }
+        if self.can_prompt && !installer::candidates(&self.detected).is_empty() {
+            v.push(MenuItem::InstallBackend);
         }
         v.extend([MenuItem::Shell, MenuItem::ChangeFolder, MenuItem::Quit]);
         v
@@ -316,6 +343,7 @@ impl App {
                 self.flash("preflight refreshed");
             }
             MenuItem::Pull => self.begin_run(vec![StepKind::Pull]),
+            MenuItem::InstallBackend => self.open_backend_picker(None),
             MenuItem::Shell => self.want_shell = true,
             MenuItem::ChangeFolder => {
                 self.path_error = None;
@@ -325,23 +353,58 @@ impl App {
         }
     }
 
+    /// The setup offer for the selected backend (or for any, when none works),
+    /// unless it can't be asked here or was declined already.
+    fn setup_offer(&self) -> Option<Offer> {
+        if !self.can_prompt || self.running() {
+            return None;
+        }
+        let offer = installer::offer(&self.detected, self.backend);
+        offer.question()?;
+        let kinds = offer.kinds();
+        (!kinds.iter().all(|k| self.declined_install.contains(k))).then_some(offer)
+    }
+
+    /// What to run by hand when the selected backend (or every backend) is not
+    /// usable: the install/start advice, as popup lines.
+    fn setup_advice(&self) -> Vec<String> {
+        installer::offer(&self.detected, self.backend)
+            .advice()
+            .into_iter()
+            .map(|l| format!("→ {l}"))
+            .collect()
+    }
+
     fn request_run(&mut self, plan: Vec<StepKind>) {
+        let ready = self.backend.is_some_and(|b| self.detected.available(b));
+        if !ready && let Some(offer) = self.setup_offer() {
+            self.popup = Some(Popup::OfferSetup(offer));
+            return;
+        }
         let Some(pf) = &self.preflight else {
+            let mut body = vec!["No backend available:".to_string()];
+            for k in BackendKind::ALL {
+                if let Some(r) = self.detected.availability(k).reason() {
+                    body.push(format!("  {:<7} {r}", k.name()));
+                }
+            }
+            body.extend(self.setup_advice());
             self.popup = Some(Popup::Message {
                 title: "Cannot run".into(),
-                body:
-                    "No backend available. Install bmi-driver/rs-route locally, or docker/podman."
-                        .into(),
+                body: body.join("\n"),
             });
             return;
         };
         if !pf.can_run() {
-            let fails: Vec<String> = pf
+            let mut fails: Vec<String> = pf
                 .checks
                 .iter()
                 .filter(|c| c.level == preflight::Level::Fail)
                 .map(|c| format!("✗ {}: {}", c.name, c.detail))
                 .collect();
+            if !ready {
+                fails.extend(self.setup_advice());
+            }
             self.popup = Some(Popup::Message {
                 title: "Preflight checks failed".into(),
                 body: fails.join("\n"),
@@ -756,7 +819,123 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {}
                 _ => self.popup = Some(Popup::ConfirmCancel),
             },
+            Popup::OfferSetup(offer) => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => match offer {
+                    Offer::ModelsUpdate { .. } => self.want_models_update = true,
+                    Offer::Installer { kinds, .. } if kinds.len() == 1 => {
+                        self.want_installer = Some(kinds)
+                    }
+                    Offer::Installer { kinds, .. } => self.open_backend_picker(Some(kinds)),
+                    Offer::Nothing | Offer::StartHints(_) => {}
+                },
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc | KeyCode::Char('q') => {
+                    self.declined_install.extend(offer.kinds());
+                    if let Some(a) = offer.advice().first() {
+                        self.flash(format!("later: {a}"));
+                    }
+                }
+                _ => self.popup = Some(Popup::OfferSetup(offer)),
+            },
+            Popup::PickBackends {
+                mut items,
+                mut cursor,
+            } => {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => cursor = cursor.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        cursor = (cursor + 1).min(items.len().saturating_sub(1))
+                    }
+                    KeyCode::Char(' ') | KeyCode::Char('x') => {
+                        if let Some(it) = items.get_mut(cursor) {
+                            it.1 = !it.1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let picked: Vec<BackendKind> = items
+                            .iter()
+                            .filter(|(_, on)| *on)
+                            .map(|(k, _)| *k)
+                            .collect();
+                        if picked.is_empty() {
+                            self.flash("select a backend with space, or esc to cancel");
+                        } else {
+                            self.start_setup(&picked);
+                            return;
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => return,
+                    _ => {}
+                }
+                self.popup = Some(Popup::PickBackends { items, cursor });
+            }
             Popup::Message { .. } | Popup::Help => {}
+        }
+    }
+
+    /// The "Install backend…" checkbox list: `kinds` (default: every backend that
+    /// is not installed). The selected backend is pre-checked, or the only one.
+    fn open_backend_picker(&mut self, kinds: Option<Vec<BackendKind>>) {
+        let kinds = kinds.unwrap_or_else(|| installer::candidates(&self.detected));
+        if kinds.is_empty() {
+            self.flash("every backend that works here is already installed");
+            return;
+        }
+        let items: Vec<(BackendKind, bool)> = kinds
+            .iter()
+            .map(|k| (*k, kinds.len() == 1 || self.backend == Some(*k)))
+            .collect();
+        let cursor = items.iter().position(|(_, on)| *on).unwrap_or(0);
+        self.popup = Some(Popup::PickBackends { items, cursor });
+    }
+
+    /// Queue the setup of `picked` for main.rs: a local backend that only lacks its
+    /// model files gets `models update`, everything else the installer.
+    fn start_setup(&mut self, picked: &[BackendKind]) {
+        let bundle_only = installer::only_bundle_missing(&self.detected);
+        let mut kinds = picked.to_vec();
+        if bundle_only && kinds.contains(&BackendKind::Local) {
+            kinds.retain(|k| *k != BackendKind::Local);
+            self.want_models_update = true;
+        }
+        if !kinds.is_empty() {
+            self.want_installer = Some(kinds);
+        }
+    }
+
+    /// After the installer / `models update` ran: re-detect, switch to a backend
+    /// that now works if the selected one still doesn't, and re-run preflight.
+    pub fn after_setup(&mut self, tried: &[BackendKind]) {
+        self.detected = Detected::detect();
+        let selected_ok = self.backend.is_some_and(|b| self.detected.available(b));
+        if !selected_ok
+            && let Some(k) = tried
+                .iter()
+                .copied()
+                .find(|k| self.detected.available(*k))
+                .or_else(|| self.detected.default_kind())
+        {
+            self.backend = Some(k);
+        }
+        // Whatever is still missing is not offered again automatically.
+        for k in tried {
+            if !self.detected.available(*k) {
+                self.declined_install.insert(*k);
+            }
+        }
+        self.refresh_preflight();
+        let n = self.menu_items().len();
+        self.menu_idx = self.menu_idx.min(n - 1);
+        let (ok, missing): (Vec<_>, Vec<_>) =
+            tried.iter().partition(|k| self.detected.available(**k));
+        let names = |v: &[&BackendKind]| v.iter().map(|k| k.name()).collect::<Vec<_>>().join(", ");
+        match (ok.is_empty(), missing.is_empty()) {
+            (_, true) => self.flash(format!("ready: {}", names(&ok))),
+            (true, false) => self.flash(format!("still not usable: {}", names(&missing))),
+            (false, false) => self.flash(format!(
+                "ready: {}; still not usable: {}",
+                names(&ok),
+                names(&missing)
+            )),
         }
     }
 
@@ -1003,4 +1182,101 @@ fn strip_home_prefix(p: &str) -> Option<&str> {
     p.strip_prefix('~')
         .filter(|r| r.starts_with(is_sep))
         .map(|r| &r[1..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyEvent;
+
+    fn key(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    /// Nothing installed; docker selected.
+    fn app(can_prompt: bool) -> App {
+        let d = Detected {
+            local_platform: crate::backend::LOCAL_SUPPORTED,
+            ..Default::default()
+        };
+        let mut a = App::new(None, d, Some(BackendKind::Docker), "img".into(), Some(1));
+        a.can_prompt = can_prompt;
+        a
+    }
+
+    #[test]
+    fn offer_needs_a_terminal() {
+        let mut a = app(false);
+        assert!(a.setup_offer().is_none());
+        assert!(!a.menu_items().contains(&MenuItem::InstallBackend));
+        a.request_run(vec![StepKind::Tool(Tool::BmiDriver)]);
+        let Some(Popup::Message { body, .. }) = &a.popup else {
+            panic!("expected a message")
+        };
+        assert!(body.contains("ngiab-rs backend install docker"), "{body}");
+    }
+
+    #[test]
+    fn declined_offer_is_not_repeated() {
+        let mut a = app(true);
+        assert!(a.menu_items().contains(&MenuItem::InstallBackend));
+        a.request_run(vec![StepKind::Tool(Tool::BmiDriver)]);
+        assert!(matches!(a.popup, Some(Popup::OfferSetup(_))));
+        a.on_key(key(KeyCode::Char('n')));
+        assert!(a.popup.is_none());
+        assert!(a.declined_install.contains(&BackendKind::Docker));
+        assert!(a.want_installer.is_none());
+        // Asking to run again shows the plain message, not the offer.
+        a.request_run(vec![StepKind::Tool(Tool::BmiDriver)]);
+        assert!(matches!(a.popup, Some(Popup::Message { .. })));
+    }
+
+    #[test]
+    fn accepted_offer_queues_the_installer() {
+        let mut a = app(true);
+        a.request_run(vec![StepKind::Tool(Tool::BmiDriver)]);
+        a.on_key(key(KeyCode::Char('y')));
+        assert_eq!(a.want_installer, Some(vec![BackendKind::Docker]));
+        assert!(a.popup.is_none());
+    }
+
+    #[test]
+    fn picker_toggles_and_splits_bundle_only_local() {
+        let mut a = app(true);
+        a.activate(MenuItem::InstallBackend);
+        let Some(Popup::PickBackends { items, .. }) = &a.popup else {
+            panic!("expected the picker")
+        };
+        // Only the selected backend starts checked.
+        assert!(
+            items
+                .iter()
+                .all(|(k, on)| *on == (*k == BackendKind::Docker))
+        );
+        // Enter with nothing checked keeps the picker open.
+        a.on_key(key(KeyCode::Char(' ')));
+        let n = items_checked(&a);
+        if n == 0 {
+            a.on_key(key(KeyCode::Enter));
+            assert!(matches!(a.popup, Some(Popup::PickBackends { .. })));
+        }
+        a.on_key(key(KeyCode::Esc));
+        assert!(a.popup.is_none());
+
+        if crate::backend::LOCAL_SUPPORTED {
+            let mut a = app(true);
+            a.detected.bmi_driver = Some("/bin/bmi-driver".into());
+            a.detected.rs_route = Some("/bin/rs-route".into());
+            a.start_setup(&[BackendKind::Local, BackendKind::Podman]);
+            assert!(a.want_models_update);
+            assert_eq!(a.want_installer, Some(vec![BackendKind::Podman]));
+        }
+    }
+
+    fn items_checked(a: &App) -> usize {
+        match &a.popup {
+            Some(Popup::PickBackends { items, .. }) => items.iter().filter(|(_, on)| *on).count(),
+            _ => 0,
+        }
+    }
 }

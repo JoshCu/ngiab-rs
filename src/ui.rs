@@ -1,7 +1,9 @@
 //! Rendering for every screen.
 
 use crate::app::{App, MenuItem, Popup, Screen, StepStatus};
+use crate::backend::BackendKind;
 use crate::eval::{EvalState, Tab, fmt_time};
+use crate::installer::Offer;
 use crate::plan::StepKind;
 use crate::preflight::Level;
 use crate::pty::TermView;
@@ -36,7 +38,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_footer(f, footer, app);
     if let Some(p) = &app.popup {
-        draw_popup(f, p);
+        draw_popup(f, p, crate::installer::only_bundle_missing(&app.detected));
     }
 }
 
@@ -697,7 +699,7 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     r
 }
 
-fn draw_popup(f: &mut Frame, p: &Popup) {
+fn draw_popup(f: &mut Frame, p: &Popup, only_bundle: bool) {
     let (title, text, color): (String, Text, Color) = match p {
         Popup::Cleanup { files, dirs, .. } => {
             let mut lines = vec![
@@ -740,6 +742,59 @@ fn draw_popup(f: &mut Frame, p: &Popup) {
             ]),
             Color::Red,
         ),
+        Popup::OfferSetup(offer) => {
+            let (title, action) = match offer {
+                Offer::ModelsUpdate { .. } => ("Model files missing", " download them   "),
+                Offer::Installer { kinds, .. } if kinds.len() == 1 => {
+                    ("Backend not set up", " run the installer   ")
+                }
+                _ => ("No backend set up", " choose backends to install   "),
+            };
+            let mut t = Text::from(offer.question().unwrap_or_default());
+            t.push_line(Line::raw(""));
+            t.push_line(
+                Line::from("The TUI is paused while it runs; you return here afterwards.").fg(DIM),
+            );
+            t.push_line(Line::raw(""));
+            t.push_line(Line::from(vec![
+                Span::raw(" y ").black().on_green(),
+                Span::raw(action),
+                Span::raw(" n ").black().on_dark_gray(),
+                Span::raw(" not now"),
+            ]));
+            (title.into(), t, ACCENT)
+        }
+        Popup::PickBackends { items, cursor } => {
+            let mut lines = vec![Line::from("Set up which backends?"), Line::raw("")];
+            for (i, (k, on)) in items.iter().enumerate() {
+                let mark = if *on { "[x]" } else { "[ ]" };
+                let note = if *k == BackendKind::Local && only_bundle {
+                    " (model files only: models update)".to_string()
+                } else {
+                    String::new()
+                };
+                let mut line = Line::from(vec![
+                    Span::raw(format!(" {mark} {:<7}", k.name())),
+                    Span::raw(note).fg(DIM),
+                ]);
+                if i == *cursor {
+                    line = line.style(Style::new().bg(ACCENT).fg(Color::Black).bold());
+                }
+                lines.push(line);
+            }
+            lines.extend([
+                Line::raw(""),
+                Line::from(vec![
+                    Span::raw(" space ").black().on_dark_gray(),
+                    Span::raw(" toggle  "),
+                    Span::raw(" enter ").black().on_green(),
+                    Span::raw(" install  "),
+                    Span::raw(" esc ").black().on_dark_gray(),
+                    Span::raw(" cancel"),
+                ]),
+            ]);
+            ("Install backends".into(), Text::from(lines), ACCENT)
+        }
         Popup::Message { title, body } => {
             let mut t = Text::from(body.clone());
             t.push_line(Line::raw(""));
