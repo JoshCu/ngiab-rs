@@ -543,8 +543,8 @@ Land this before any other change adds flags.
   - On macOS and Windows the command prints the no-op message.
 
 ### B.5 `install.sh` (POSIX sh, repo root, published as a release asset)
-- [ ] Usage: `curl -LsSf https://github.com/JoshCu/ngiab-rs/releases/latest/download/install.sh | sh`. Pass flags with `| sh -s -- --backends docker -y`.
-- [ ] Flags and environment variables (a flag wins over its env var):
+- [x] Usage: `curl -LsSf https://github.com/JoshCu/ngiab-rs/releases/latest/download/install.sh | sh`. Pass flags with `| sh -s -- --backends docker -y`.
+- [x] Flags and environment variables (a flag wins over its env var): _(also `--flag=value` forms; `--backends` is validated before anything is downloaded. Extra env: `NGIAB_RS_REPO`, `NGIAB_RS_IMAGE`, and `NGIAB_RS_DOWNLOAD_URL`, a base URL that replaces the GitHub release URLs and the raw TOOL_VERSIONS URL, for mirrors and testing)_
 
   | flag | env | meaning |
   | --- | --- | --- |
@@ -554,28 +554,29 @@ Land this before any other change adds flags.
   | `--skip-binary` | `NGIAB_RS_SKIP_BINARY=1` | only set up backends (used by `ngiab-rs backend install`) |
   | `--no-modify-path` | `NGIAB_RS_NO_MODIFY_PATH=1` | don't edit shell rc files |
   | `-y`, `--yes` | `NGIAB_RS_YES=1` | accept all prompts, including sudo/package installs |
-- [ ] Platform detection:
+- [x] Platform detection: _(also: a Linux x86_64 without glibc (musl) gets the no-binary message; with `--skip-binary` an unsupported platform can still set up docker/podman)_
   - Map `uname -s`/`uname -m` to `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` or `x86_64-apple-darwin`.
   - On an Intel macOS shell running under Rosetta (`sysctl -n sysctl.proc_translated` returns 1), prefer the arm64 binary.
   - On Linux aarch64 and anything else, print that there is no prebuilt binary and suggest the container (`docker run -it -v "$PWD:/data" joshcu/ngiab-rs`) or `cargo install --git …`. Then exit 1.
-- [ ] Download:
+- [x] Download: _(`openssl dgst` as a third checksum fallback; `install -m 755` to a temp name in the install dir, then `mv -f`, so a running binary is replaced safely. The rc line is `case ":$PATH:" in *':DIR:'*) ;; *) export PATH='DIR':"$PATH" ;; esac # ngiab-rs`; if none of the three rc files exists, `~/.profile` is created; the fish file is written only when fish or `~/.config/fish` exists)_
   - Use `curl`, or fall back to `wget`.
   - Verify against `SHA256SUMS` with `sha256sum`, or `shasum -a 256` on macOS.
   - Extract to a temp dir, then `install -m 755` into the install dir. On macOS, run `xattr -d com.apple.quarantine` (best effort).
   - If the install dir is not on `PATH`, add an `export PATH=…` line marked `# ngiab-rs` to each of `~/.bashrc`, `~/.zshrc` and `~/.profile` that exists. For fish, write `~/.config/fish/conf.d/ngiab-rs.fish`. This must be idempotent.
-- [ ] Prompts read from `</dev/tty`. If `/dev/tty` can't be read and neither `--backends` nor `-y` was given, install only the binary, print the non-interactive command line, and never hang.
-- [ ] Backend menu: numbered and multi-select (`1 3`, `all`, or Enter for the recommended choice). Each entry describes what it will do.
+- [x] Prompts read from `</dev/tty`. If `/dev/tty` can't be read and neither `--backends` nor `-y` was given, install only the binary, print the non-interactive command line, and never hang.
+- [x] Backend menu: numbered and multi-select (`1 3`, `all`, or Enter for the recommended choice). Each entry describes what it will do. _(names work too; 3 bad answers or EOF -> no backend. Without a terminal every confirmation is answered no (unless `-y`) and sudo runs as `sudo -n`, so nothing waits for input. `-y` without `--backends` sets up the recommended backend)_
   1. **local**: runs bmi-driver and rs-route as native binaries, with no containers. It is the fastest option. **Linux x86_64 only**; elsewhere it is shown as unavailable with the reason.
      - Will:
        - Check for rustup, or offer to install it (`curl https://sh.rustup.rs | sh -s -- -y`).
-       - Check for a C/C++ compiler, `cmake` and `make`, and offer an install command for each package manager:
-         - apt: `build-essential cmake`
-         - dnf: `gcc gcc-c++ make cmake`
-         - pacman: `base-devel cmake`
-         - zypper: the equivalent packages
+       - Check for a C/C++ compiler, **gfortran**, `cmake` and `make`, and offer an install command for each package manager:
+         - apt: `build-essential gfortran cmake`
+         - dnf/yum: `gcc gcc-c++ gcc-gfortran make cmake`
+         - pacman: `base-devel gcc-fortran cmake`
+         - zypper: `gcc gcc-c++ gcc-fortran make cmake`
 
-         gfortran and Python headers are **not** needed. Fortran runtime libraries are bundled in the model files.
-       - Source `TOOL_VERSIONS` (fetched from the release tag) and run `cargo install bmi-driver --version $BMI_DRIVER_VERSION --locked --features static`, then the same for `rs_route`. This takes about 5–15 minutes; say so.
+         _(Corrected: rs_route 0.3.1's build.rs compiles the t-route Fortran kernel, so **gfortran is needed to build** it. Python headers are not needed, and at run time the Fortran runtime libraries still come from the model bundle.)_
+       - _(Found while testing: the static HDF5 build (`hdf5-metno-src` 0.10.4) needs **CMake >= 3.26**. Ubuntu 22.04 ships 3.22 and Debian 12 3.25. If the system cmake is missing or older, install.sh offers to download Kitware's `cmake-3.31.10-linux-x86_64.tar.gz` (SHA-256 pinned in the script) into its temp dir and puts it first on `PATH` for the build only. `CMAKE_POLICY_VERSION_MINIMUM=3.5` is also set, as in the Dockerfile, for CMake 4.)_
+       - Source `TOOL_VERSIONS` (fetched from the release tag; _parsed with sed and validated, never sourced_) and run `cargo install bmi-driver --version $BMI_DRIVER_VERSION --locked --features static`, then the same for `rs_route`. This takes about 5–15 minutes; say so.
        - Check `ldd --version` against the bundle's `min_glibc` (2.34). If it is lower, warn that local won't work and recommend docker/podman.
        - Run the freshly installed `ngiab-rs models update -y` to download the model files (about 30–80 MB) into `~/.ngiab/container`. The download logic is not duplicated in sh.
   2. **docker**: runs each tool in `joshcu/ngiab-rs:<version>`.
@@ -594,35 +595,36 @@ Land this before any other change adds flags.
     - Otherwise docker.
   - Echo every sudo or package-manager command and ask for confirmation (skipped with `-y`).
   - A failure in one backend doesn't stop the others. Print a summary table at the end.
-- [ ] Record the result with `ngiab-rs backend record <kinds>`. This updates `install.json`, so the shell script doesn't have to write JSON.
-- [ ] `shellcheck` clean. Tested under dash and bash on ubuntu:24.04, fedora and macOS. Re-running it upgrades the binary and re-checks the backends.
-- [ ] **Acceptance:**
+- [x] Record the result with `ngiab-rs backend record <kinds>`. This updates `install.json`, so the shell script doesn't have to write JSON. _(records backends whose result is ok or needs-action; skipped when there are none, since `record` requires at least one kind; a failing `record` is only a warning)_
+- [ ] `shellcheck` clean. Tested under dash and bash on ubuntu:24.04, fedora and macOS. Re-running it upgrades the binary and re-checks the backends. _(shellcheck 0.11 clean in sh and bash mode; `dash -n`/`bash -n`; run against a local fake release (`NGIAB_RS_DOWNLOAD_URL`) under dash on ubuntu:24.04 and bash on fedora 45: no-tty/no-flags, re-run idempotency of the PATH lines, `curl | sh -s --` style, checksum mismatch aborts without installing, bad `--backends`, `--install-dir`/`--version=`, non-root without sudo, and the tty menu via `script` (bad input, EOF, decline). `--backends local -y` built bmi-driver 0.2.1 and rs_route 0.3.1 from a bare ubuntu:24.04 (rustup + apt), ubuntu:22.04 (+ Kitware cmake) and fedora 45 (dnf, CMake 4). **Not tested on macOS**, and docker/podman installs were not exercised end to end)_
+- [ ] **Acceptance:** _(first and third points pass; the second waits for `models update` and a models release)_
   - On a clean ubuntu:24.04, `--backends none` works, and `ngiab-rs --version` runs.
   - `--backends local -y` leads to a working `--auto` run on a sample folder **[C]**.
   - Run with no tty and no flags, it never hangs.
 
 ### B.6 `install.ps1` (Windows, published as a release asset)
-- [ ] Usage: `powershell -ExecutionPolicy ByPass -c "irm https://github.com/JoshCu/ngiab-rs/releases/latest/download/install.ps1 | iex"`.
+- [x] Usage: `powershell -ExecutionPolicy ByPass -c "irm https://github.com/JoshCu/ngiab-rs/releases/latest/download/install.ps1 | iex"`.
   - Configuration comes **only from environment variables**: `NGIAB_RS_BACKENDS`, `NGIAB_RS_VERSION`, `NGIAB_RS_INSTALL_DIR`, `NGIAB_RS_NO_MODIFY_PATH`, `NGIAB_RS_YES` and `NGIAB_RS_SKIP_BINARY`.
   - There is no `param()` block, because it conflicts with `irm | iex`.
   - `-File` is used only for the pinned re-run from B.7, which also passes its settings through these variables.
-- [ ] Architecture: AMD64 is supported. ARM64 gets a warning and the x64 build, which runs under emulation. Anything else fails.
-- [ ] Install steps:
+  - _(The whole script runs in one `& { }` block, so `iex` leaves no functions or preference changes in the session; `exit <code>` is used only under `-File`. Also honours `NGIAB_RS_REPO`, `NGIAB_RS_IMAGE` and `NGIAB_RS_DOWNLOAD_URL`.)_
+- [x] Architecture: AMD64 is supported. ARM64 gets a warning and the x64 build, which runs under emulation. Anything else fails.
+- [x] Install steps:
   1. Set TLS 1.2 so Windows PowerShell 5.1 can download.
   2. Download the zip and `SHA256SUMS` with `Invoke-WebRequest -UseBasicParsing`, and verify with `Get-FileHash -Algorithm SHA256`.
   3. `Expand-Archive` it.
   4. Install to `%USERPROFILE%\.local\bin\ngiab-rs.exe`. If the exe is in use, rename the old one to `.old` first.
-  5. Add the directory to the user `Path` via `[Environment]::SetEnvironmentVariable`, and to `$env:Path` for the current session.
-- [ ] Backend menu offers docker and podman only, with the line "local: not available on Windows (model libraries are Linux-only)".
+  5. Add the directory to the user `Path` via `[Environment]::SetEnvironmentVariable`, and to `$env:Path` for the current session. _(Deviation: the user Path is read and written through the registry as `REG_EXPAND_SZ` (`DoNotExpandEnvironmentNames`), because `SetEnvironmentVariable` would flatten existing `%VAR%` entries; a dummy `SetEnvironmentVariable` call then broadcasts the change)_
+- [x] Backend menu offers docker and podman only, with the line "local: not available on Windows (model libraries are Linux-only)".
   - **docker:** `winget install -e --id Docker.DockerDesktop`.
     - Needs WSL2. Check `wsl --status`; if it fails, suggest `wsl --install` and a reboot.
     - Docker Desktop must be launched once.
     - Then `docker pull` the version-matched tag.
   - **podman:** `winget install -e --id RedHat.Podman`, then `podman machine init` and `podman machine start`, then pull.
   - If winget is missing, print the download URLs instead.
-- [ ] Only call `Read-Host` when the session is interactive and `NGIAB_RS_YES` is not set.
-- [ ] Record the result with `ngiab-rs backend record`.
-- [ ] **Acceptance:**
+- [x] Only call `Read-Host` when the session is interactive and `NGIAB_RS_YES` is not set.
+- [x] Record the result with `ngiab-rs backend record`.
+- [ ] **Acceptance:** _(not run: no Windows machine. Checked with pwsh 7.5 on Linux: the file parses, PSScriptAnalyzer reports only style rules (Write-Host, plural nouns), and the functions were exercised: backend parsing, SHA256SUMS parsing, Path matching, prompts when not interactive, native-command wrappers, release URLs, and `Install-Binary` against a local server including re-install and checksum mismatch. Windows PowerShell 5.1, the registry Path edit, winget, WSL and Docker Desktop are untested)_
   - On a fresh `windows-latest` with `NGIAB_RS_BACKENDS=none`, `ngiab-rs --version` works in a new shell.
   - Manual test with Docker Desktop: `--auto` completes on sample data **[C]**.
 
