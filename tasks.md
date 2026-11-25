@@ -449,7 +449,7 @@ Land this before any other change adds flags.
   The Docker `CMD ["/data"]` and `/data --auto -j 8` must keep working.
 
 ### B.3 `src/net.rs` and `ngiab-rs self update` (`src/selfupdate.rs`)
-- [ ] Dependencies: _(partial: `ureq` 3 (features `rustls`, `json`, `gzip` confirmed), `sha2`, `flate2`, `tar`, `semver` and `zip` are added; `zip` uses `deflate-flate2` (decompression only; `deflate` would pull in the zopfli compressor). Not done: `self-replace`, deferred to the `self update` step because rustc 1.100 warns on unused dependencies)_
+- [x] Dependencies: _(`ureq` 3 (features `rustls`, `json`, `gzip` confirmed), `sha2`, `flate2`, `tar`, `semver`, `self-replace` 1.5 and `zip` are added; `zip` uses `deflate-flate2` (decompression only; `deflate` would pull in the zopfli compressor))_
   - `ureq = { version = "3", default-features = false, features = ["rustls","json","gzip"] }`. Check the exact feature names when adding it.
   - `sha2`, `flate2`, `tar`, `semver`, `self-replace`.
   - `zip` (deflate only), under `[target.'cfg(windows)'.dependencies]`.
@@ -467,8 +467,8 @@ Land this before any other change adds flags.
   - `extract_tar_gz(archive, into)` uses `tar::Archive::unpack`, which rejects `..` and absolute paths and preserves symlinks. `extract_zip` does the same for Windows.
   - Rate-limit fallback for binaries: `https://github.com/{repo}/releases/latest/download/<asset>`. The newest tag can be read from the `Location` header of the `/releases/latest` redirect.
 - [x] `const REPO: &str = "JoshCu/ngiab-rs"`, overridable with `NGIAB_RS_REPO` for testing forks. _(`home::REPO` and `home::repo()`; `InstallInfo::default` uses it)_
-- [ ] The asset name is `ngiab-rs-{env!("NGIAB_TARGET")}.{tar.gz|zip}` **[A]**. The binary is at the archive root.
-- [ ] `self update [--version V] [--check] [-y]`:
+- [x] The asset name is `ngiab-rs-{env!("NGIAB_TARGET")}.{tar.gz|zip}` **[A]**. The binary is at the archive root. _(`selfupdate::asset_name()`)_
+- [x] `self update [--version V] [--check] [-y]`: _(`src/selfupdate.rs`. `--check` skips the refusals (it only reads). Newest = GitHub "latest", or for a prerelease build the highest `v*` tag including prereleases (so rc1 finds rc2); the `releases/latest` redirect is the fallback when the API fails. Scratch dir `.ngiab-rs-update/` next to the exe. self-replace on Windows does not leave `ngiab-rs.exe.old` but `.ngiab-rs.*.__relocated__.exe`/`.__temp__.exe`; `cleanup_stale_binaries()` removes those (and `ngiab-rs.exe.old`) when older than a minute, at every start)_
   1. Refuse to update in these cases:
      - **Running in a container.** Factor `in_container()` out of `Detected::detect` and reuse it here. Message: "pull the image instead".
      - **A cargo install.** That is, the canonical exe path is under `~/.cargo/bin`, or `install_method == "cargo"`. Message: "use cargo install --force".
@@ -485,12 +485,12 @@ Land this before any other change adds flags.
   7. Print hints:
      - "The docker/podman image for this version is `joshcu/ngiab-rs:X.Y.Z`; it is pulled on next use, or run `docker pull …`" (the default image is pinned, see A.1).
      - If a model bundle is installed and a newer `models-*` release exists: "new model files available: run `ngiab-rs models update`". Don't run it automatically.
-- [ ] Edge cases:
+- [x] Edge cases: _(scratch dir removed on the next update; SHA256SUMS checked before anything is extracted; Windows replace errors mention antivirus / install.ps1; downgrade asks, or needs `-y` without a terminal)_
   - Leftover `.part` files are cleaned up on the next run.
   - A checksum mismatch aborts without touching the exe.
   - If the Windows exe is locked (for example by antivirus), report it and suggest re-running install.ps1.
   - A downgrade via `--version` needs confirmation unless `-y` is given.
-- [ ] **Acceptance:**
+- [ ] **Acceptance:** _(not done: no `v*` release exists yet, so rc1 → rc2 can't be run. Covered meanwhile: a localhost-server test of download + SHA256SUMS (good, corrupted, missing asset, 404) + extract + `--version` smoke test, unit tests for `--check` exit codes, version decisions and refusals, and manual runs against `NGIAB_RS_REPO=cli/cli` (exit 10, graceful 404 on SHA256SUMS, exe untouched), a read-only exe dir, a fake `CARGO_HOME` and `container=podman`)_
   - v0.2.0-rc1 updates to rc2 on Linux, both macOS architectures and Windows.
   - A corrupted `SHA256SUMS` leaves the exe unchanged.
   - The `--check` exit codes behave as specified.
@@ -498,16 +498,16 @@ Land this before any other change adds flags.
 ### B.4 `ngiab-rs models update | revert | status` (`src/models.rs`)
 - [x] `models::Manifest` follows the contract schema in A.6. Fields: `schema`, `release`, `source_image`, `source_digest`, `created`, `target`, `min_glibc`, `prefixes`, `libs`, `tar_sha256`, plus `installed_at` and `installed_from` added on install. Parsing tolerates unknown fields. _(`models::Manifest` (serde default, unknown fields ignored); `Manifest::load(bundle)` errors on a `schema` newer than `MANIFEST_SCHEMA` with "run `ngiab-rs self update`"; also `Manifest::parse`, `prefixes_or_default`, `label` and `models::version_lt` for glibc)_
   - If `schema` is newer than this binary understands, print "run `ngiab-rs self update`".
-- [ ] Releases: model bundles are published under **separate tags `models-YYYY.MM.DD[.N]`**, which are never marked latest **[A]**.
+- [x] Releases: model bundles are published under **separate tags `models-YYYY.MM.DD[.N]`**, which are never marked latest **[A]**. _(`models::newest_release`, `release_lt`; the release's `.json` is also checked against SHA256SUMS)_
   - To find the newest: `net::github_releases(REPO)`, keep tags starting with `models-` that are not drafts, and take the maximum by dotted-numeric comparison.
   - `--version models-2026.11.23` (or just `2026.11.23`) pins a specific release.
-- [ ] `models status` prints:
+- [x] `models status` prints:
   - the installed release, `source_image` and install date
   - the backup release (from `container.bak/manifest.json`)
   - the newest release available (network failures are reported softly)
   - disk usage
   - glibc compatibility: host `gnu_get_libc_version()` compared with `min_glibc`
-- [ ] `models update [--version R] [--file TAR] [--check] [--force] [-y]`:
+- [x] `models update [--version R] [--file TAR] [--check] [--force] [-y]`: _(`--check` exits 10 when an update is available, like `self update`; `--file` conflicts with `--version` and also uses a sibling `SHA256SUMS`; the tarball is downloaded with `net::download_part` so it only ever exists as `container.new.tar.gz.part`; a pinned older release asks for confirmation (`-y`); the extracted manifest must be for `x86_64-unknown-linux-gnu` and match the release's; `container.bak`'s manifest is deleted first so a half-deleted backup is never offered)_
   1. **Platform gate.** Unless the target is `cfg(all(target_os="linux", target_arch="x86_64"))`, print "model files are only used by the local backend on Linux x86_64; docker/podman need nothing" and exit 0.
      - Also warn, but continue, if host glibc is below `min_glibc`. The user decided that systems with glibc below 2.34 are expected to use docker/podman.
   2. Take an exclusive lock on `~/.ngiab/.lock` with `File::try_lock` (stable since Rust 1.89).
@@ -525,17 +525,17 @@ Land this before any other change adds flags.
 
      If the second rename fails, move `container.bak` back.
   8. Print the old and new releases and the backup location. Only one level of undo is kept, because each update deletes the previous `.bak`. This is what was asked for.
-- [ ] `models revert [-y]`:
+- [x] `models revert [-y]`:
   - Requires `container.bak` with a valid manifest. Otherwise print "nothing to revert" and exit 1.
   - Do a three-way swap: `container` → `container.tmp`, `container.bak` → `container`, `container.tmp` → `container.bak`. Running `revert` twice therefore re-applies the update; document this in the README.
   - Asks for confirmation unless `-y` is given. Uses the same lock as `update`.
-- [ ] Crash recovery (every `models` command, under the lock):
+- [x] Crash recovery (every `models` command, under the lock): _(also: `container` missing with `container.bak` present (update stopped between its renames) restores the backup; `container.tmp` with `container` but no `container.bak` finishes the revert; all three present is reported and left alone. `status` releases the lock before its network lookup)_
   - If `container` is missing and `container.tmp` exists, rename it back.
   - Delete any stale `container.new` and `*.part`.
   - Report what was done.
   - Never touch anything else in `~/.ngiab`.
 - [x] `Detected` gains `models: Option<Manifest>`, read from `container/manifest.json`. It feeds `Availability` for local **[C]**. _(plus `model_root` (the bundle dir when it exists, `/` inside our own image), `models_error` (unreadable manifest), `own_image`, `local_platform` and `glibc`)_
-- [ ] **Acceptance:**
+- [x] **Acceptance:** _(with `NGIAB_HOME=/tmp/ngiab-models-test`, the local bundle and a second variant (`models-2026.12.01`, repacked copy): install, update, forced update (one `.bak`), unchanged sha skips, `--check` exit 10, downgrade needs `-y`, revert twice, leftover `.tmp`/`.new`/`.part` and the between-renames state recovered, `kill -9` during extraction leaves `container/` intact, `libcfebmi.so` resolves, lock contention refused. The network path (newest `models-*` release) was only exercised against repos without such releases (graceful errors); the macOS/Windows no-op message is a compile-time branch checked with `cargo xwin check` only)_
   - Install, update, update again: only one `.bak` remains, and an unchanged sha skips the download.
   - After update then revert, the previous manifest is back. A second revert swaps them again.
   - Killing the process during extraction leaves `container/` intact.
