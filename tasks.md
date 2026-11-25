@@ -631,8 +631,8 @@ Land this before any other change adds flags.
 ### B.7 Re-running the installer when a backend is missing
 This is the only place it is implemented. The local section relies on it.
 
-- [ ] `ngiab-rs backend list` prints, for each backend, its `Availability` **[C]** with the reason, the platform support, and the model-bundle status.
-- [ ] `ngiab-rs backend install <kinds…>` (`src/installer.rs`):
+- [x] `ngiab-rs backend list` prints, for each backend, its `Availability` **[C]** with the reason, the platform support, and the model-bundle status. _(plus the install/start advice under each unusable backend, and the host glibc)_
+- [x] `ngiab-rs backend install <kinds…>` (`src/installer.rs`): _(also passes `--version <ver>` and, when this binary is named `ngiab-rs`, `--install-dir <its dir>` (Windows: `NGIAB_RS_VERSION`/`NGIAB_RS_INSTALL_DIR`) so `--skip-binary` finds this very binary; `powershell -NoProfile`. `NGIAB_RS_DOWNLOAD_URL` (the installers' own mirror/testing variable) overrides the base URL for both files and is inherited by the child. Exit 1 when a requested backend is still unusable afterwards, with its advice. Tested against a fake installer served locally, incl. a checksum mismatch; no real release yet)_
   1. Download the installer **pinned to the running version**: `https://github.com/{REPO}/releases/download/v{CARGO_PKG_VERSION}/install.sh`, or `install.ps1` on Windows.
   2. Verify it against that release's `SHA256SUMS`.
   3. Run it with inherited stdio:
@@ -640,19 +640,19 @@ This is the only place it is implemented. The local section relies on it.
      - Windows: set `NGIAB_RS_SKIP_BINARY=1` and `NGIAB_RS_BACKENDS=<kinds>`, then run `powershell -ExecutionPolicy Bypass -File <tmp>`.
   4. Run `Detected::detect()` again and report the result.
   - Refuse `local` on anything other than Linux x86_64, and refuse inside a container.
-- [ ] CLI hook in `run_main`. This replaces the hard error at `src/main.rs:60-64`.
+- [x] CLI hook in `run_main`. This replaces the hard error at `src/main.rs:60-64`. _(`Unsupported` stays a hard error (nothing is installable then). One decision function, `installer::offer`, serves the CLI, the TUI and `backend list`. With no backend chosen and several installable, the installer runs without `--backends` so its own menu asks; a stopped runtime wins over installing another. A decline is passed to the TUI's `declined_install`; after a failed attempt the reason is printed once more, no second prompt)_
   - It applies when `--backend X` is `NotInstalled` or `Unsupported` but installable, or when no backend is available at all, and stdin and stdout are both terminals and `--auto` is not set.
   - Prompt: "Backend 'X' is not set up (<reason>). Run the installer now? [y/N]".
   - On yes: `installer::run`, then detect again and continue.
   - Otherwise: show the current error plus "run `ngiab-rs backend install X`".
   - For `NotRunning`, don't offer to reinstall. Print the matching start hint instead: `systemctl start docker`, open Docker Desktop, or `podman machine start`.
-- [ ] TUI hook:
+- [x] TUI hook: _(`suspended()` in main.rs now hosts the shell, the installer and `models update`; it resumes with a fresh `Terminal` instead of `terminal.clear()`, which queried the cursor position and errored out of the TUI when the terminal didn't answer. SIGINT has its own flag, cleared after a suspension, so a ctrl-c meant for the installer doesn't quit the TUI; the one wart: ctrl-c can't interrupt the in-process `models update` while the TUI is suspended. No mouse capture exists yet, so D.5 has to add the toggle in `suspended()`. The offer and the menu entry also need a terminal on stdin; after a setup the TUI switches to a backend that now works, and anything still unusable is not offered again automatically. Driven through a pty: offer → decline → no re-offer; menu → picker → `models update` → back in the TUI)_
   - Add `MenuItem::InstallBackend` ("Install backend…") to `App::menu_items()` (`src/app.rs:195`) when a backend that is supported on this platform is `NotInstalled`.
   - Replace the "No backend available" popup in `request_run` (`src/app.rs:291-297`) with a confirm popup.
   - Add the field `want_installer: Option<Vec<BackendKind>>`. It goes through the shared helper "suspend TUI → run closure → resume" (`main.rs:140-147` is the existing `want_shell` pattern). Afterwards: `app.detected = Detected::detect()` and `refresh_preflight()`.
   - Add `declined_install: HashSet<BackendKind>` so the prompt isn't repeated in the same session.
   - The backend picker is a small checkbox popup listing the backends that are not installed.
-- [ ] **Acceptance:**
+- [ ] **Acceptance:** _(`--auto`, no-tty, in-container and stopped-daemon cases are unit-tested (`installer::tests`, `app::tests`) and `--auto` checked by hand; the real install-and-continue needs a published release and a machine without docker)_
   - On a machine with only podman, `ngiab-rs ./data --backend docker` prompts, installs, and continues.
   - `--auto` never prompts.
   - No prompt appears inside a container.
@@ -891,7 +891,7 @@ The installer prompt hook itself is specified once, in B.7.
     - `NotRunning(note)` when `RuntimeInfo.usable == false`. This shows a "start it" hint and never offers a reinstall.
 - [x] `default_kind()` keeps the order local > docker > podman, but only picks `Available` backends. A user with bmi-driver but no bundle therefore falls through to docker instead of failing. _(unit-tested)_
 - [x] `cycle_backend` (`app.rs:251`): show unavailable backends greyed out with their reason. Don't hide them. _(the Backends panel shows every backend; unavailable ones are greyed with the reason instead of the summary. `b` cycles through all but `Unsupported` ones, so selecting e.g. local without model files shows preflight's fix; the flash includes the reason)_
-- [ ] If only the local bundle is missing (the binaries are present), offer `ngiab-rs models update` in-process instead of the full installer. _(not done: `models update` is still a stub and the in-process offer is part of the B.7 hooks; for now the availability reason and the preflight Fail both say "run `ngiab-rs models update`")_
+- [x] If only the local bundle is missing (the binaries are present), offer `ngiab-rs models update` in-process instead of the full installer. _(`installer::Offer::ModelsUpdate`, in the CLI prompt and the TUI popup/picker; forced when the installed bundle is for another target. `backend install local` still runs the full installer, as asked)_
 
 ### C.8 Ordering
 1. C.6 and the `CommandSpec.env` part of C.4. These are independent; they belong in the foundation PR and unblock Windows CI.
