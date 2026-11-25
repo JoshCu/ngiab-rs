@@ -16,9 +16,6 @@
 //!
 //! UI state lives elsewhere (`dirs::config_dir()/ngiab-rs/state.json`, see config.rs).
 
-// Consumers (models update, self update, local backend, D.1) land in later steps.
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::io;
@@ -99,10 +96,12 @@ pub fn lock_path() -> io::Result<PathBuf> {
 /// NGIAB_data_preprocess's own settings file. Always `~/.ngiab/preprocessor`:
 /// it belongs to the preprocessor, so `NGIAB_HOME` does not move it. `None` without
 /// a home directory.
+#[allow(dead_code)] // used by D.1 (default data path)
 pub fn preprocessor_file() -> Option<PathBuf> {
     preprocessor_file_from(dirs::home_dir())
 }
 
+#[allow(dead_code)] // used by D.1 (default data path)
 fn preprocessor_file_from(home: Option<PathBuf>) -> Option<PathBuf> {
     default_ngiab_dir(home).map(|d| d.join("preprocessor"))
 }

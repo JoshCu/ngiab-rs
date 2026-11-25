@@ -4,9 +4,6 @@
 //! Every request goes through [`agent()`], which never turns an HTTP status into an
 //! error (`http_status_as_error(false)`), so callers can inspect 403/429/5xx.
 
-// Consumers (self update, models update, USGS) land in later steps.
-#![allow(dead_code)]
-
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -238,6 +235,7 @@ pub fn tag_version(tag: &str) -> Option<semver::Version> {
 
 /// `https://github.com/{repo}/releases/latest/download/{asset}`: works without the
 /// API (and its rate limit) for assets of the latest release.
+#[allow(dead_code)] // for the installer re-run (B.7)
 pub fn latest_download_url(repo: &str, asset: &str) -> String {
     format!("https://github.com/{repo}/releases/latest/download/{asset}")
 }
@@ -314,6 +312,23 @@ pub fn part_path(dest: &Path) -> PathBuf {
 /// `.part` file is removed.
 pub fn download(url: &str, dest: &Path, progress: bool) -> Result<u64> {
     let part = part_path(dest);
+    let label = dest
+        .file_name()
+        .map_or_else(|| url.to_string(), |n| n.to_string_lossy().into_owned());
+    let done = download_part(url, &part, &label, progress)?;
+    let res = fs::rename(&part, dest)
+        .with_context(|| format!("renaming {} to {}", part.display(), dest.display()));
+    if res.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    res.map(|()| done)
+}
+
+/// Streams `url` into exactly `part` (no rename), labelling progress with `label`.
+/// For callers that consume the file in place and must not leave any other name
+/// behind (`models update` keeps its tarball as `container.new.tar.gz.part`).
+/// On failure the file is removed.
+pub fn download_part(url: &str, part: &Path, label: &str, progress: bool) -> Result<u64> {
     let res = (|| -> Result<u64> {
         // `identity`: the file is checksummed as served, so never ask for a
         // transparently decompressed body. The per-read timeout catches a stalled
@@ -330,12 +345,9 @@ pub fn download(url: &str, dest: &Path, progress: bool) -> Result<u64> {
         if let Some(dir) = part.parent().filter(|d| !d.as_os_str().is_empty()) {
             fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
-        let file = File::create(&part).with_context(|| format!("creating {}", part.display()))?;
+        let file = File::create(part).with_context(|| format!("creating {}", part.display()))?;
         let mut out = BufWriter::new(file);
-        let label = dest
-            .file_name()
-            .map_or_else(|| url.to_string(), |n| n.to_string_lossy().into_owned());
-        let mut bar = Progress::new(&label, total, progress && io::stderr().is_terminal());
+        let mut bar = Progress::new(label, total, progress && io::stderr().is_terminal());
         let mut buf = vec![0u8; 64 * 1024];
         let mut done = 0u64;
         loop {
@@ -359,13 +371,10 @@ pub fn download(url: &str, dest: &Path, progress: bool) -> Result<u64> {
         }
         let file = out.into_inner().map_err(|e| e.into_error())?;
         file.sync_all()?;
-        drop(file);
-        fs::rename(&part, dest)
-            .with_context(|| format!("renaming {} to {}", part.display(), dest.display()))?;
         Ok(done)
     })();
     if res.is_err() {
-        let _ = fs::remove_file(&part);
+        let _ = fs::remove_file(part);
     }
     res
 }
@@ -456,6 +465,11 @@ pub fn sha256_file(path: &Path) -> Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(to_hex(&hasher.finalize()))
+}
+
+/// Lowercase hex SHA-256 of an in-memory buffer (e.g. a downloaded manifest).
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    to_hex(&Sha256::digest(bytes))
 }
 
 fn to_hex(bytes: &[u8]) -> String {

@@ -127,11 +127,12 @@ pub struct ModelsUpdateArgs {
     #[arg(long, value_name = "RELEASE")]
     pub version: Option<String>,
 
-    /// Install from a local tarball instead of downloading
-    #[arg(long, value_name = "TAR")]
+    /// Install from a local tarball instead of downloading. A sibling `.json`
+    /// manifest (and `SHA256SUMS`), if present, is used to verify it
+    #[arg(long, value_name = "TAR", conflicts_with = "version")]
     pub file: Option<PathBuf>,
 
-    /// Only report whether an update is available
+    /// Only check: exit 0 when up to date, 10 when an update is available
     #[arg(long)]
     pub check: bool,
 
@@ -159,6 +160,43 @@ pub enum BackendCmd {
         #[arg(required = true, value_enum, value_name = "BACKEND")]
         kinds: Vec<BackendKind>,
     },
+}
+
+/// Exit code of `self update --check` and `models update --check` when an update is
+/// available (0 means up to date).
+pub const EXIT_UPDATE_AVAILABLE: u8 = 10;
+
+/// Ask `prompt [y/N]` on the terminal. `yes` (from `-y`) answers for the user.
+/// Without `-y` and without a terminal on stdin this fails rather than guessing.
+pub fn confirm(prompt: &str, yes: bool) -> anyhow::Result<bool> {
+    use std::io::IsTerminal;
+    let stdin = std::io::stdin();
+    // Never block a test run on a prompt, even when `cargo test` has a terminal.
+    let interactive = !cfg!(test) && stdin.is_terminal();
+    confirm_with(prompt, yes, interactive, &mut stdin.lock())
+}
+
+fn confirm_with(
+    prompt: &str,
+    yes: bool,
+    interactive: bool,
+    input: &mut dyn std::io::BufRead,
+) -> anyhow::Result<bool> {
+    use std::io::Write;
+    if yes {
+        return Ok(true);
+    }
+    if !interactive {
+        anyhow::bail!("not confirmed ({prompt}): no terminal to ask on; pass -y to confirm");
+    }
+    eprint!("{prompt} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    input.read_line(&mut line)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 #[cfg(test)]
@@ -268,24 +306,23 @@ mod tests {
             })
         ));
 
-        let cli = parse(&[
-            "models",
-            "update",
-            "--version",
-            "2026.11.23",
-            "--file",
-            "b.tar.gz",
-            "--force",
-        ]);
-        let Some(Cmd::Models {
-            cmd: ModelsCmd::Update(a),
-        }) = cli.cmd
-        else {
-            panic!("{:?}", cli.cmd)
+        let update = |args: &[&str]| {
+            let cli = parse(args);
+            let Some(Cmd::Models {
+                cmd: ModelsCmd::Update(a),
+            }) = cli.cmd
+            else {
+                panic!("{:?}", cli.cmd)
+            };
+            a
         };
-        assert_eq!(a.version.as_deref(), Some("2026.11.23"));
+        let a = update(&["models", "update", "--file", "b.tar.gz", "--force"]);
+        assert_eq!(a.version, None);
         assert_eq!(a.file, Some(PathBuf::from("b.tar.gz")));
         assert!(a.force && !a.check && !a.yes);
+        let a = update(&["models", "update", "--version", "2026.11.23", "--check"]);
+        assert_eq!(a.version.as_deref(), Some("2026.11.23"));
+        assert!(a.check && a.file.is_none());
     }
 
     #[test]
@@ -354,5 +391,41 @@ mod tests {
         let help = Cli::command().render_long_help().to_string();
         assert!(help.contains("ngiab-rs ./models"), "{help}");
         assert!(help.contains("ngiab-rs run models"), "{help}");
+    }
+
+    #[test]
+    fn confirmation() {
+        let mut no_input: &[u8] = b"";
+        assert!(confirm_with("Downgrade?", true, false, &mut no_input).unwrap());
+        let e = confirm_with("Downgrade?", false, false, &mut no_input).unwrap_err();
+        assert!(e.to_string().contains("-y"), "{e}");
+        for (answer, want) in [
+            ("y\n", true),
+            ("YES\n", true),
+            ("n\n", false),
+            ("\n", false),
+            ("", false),
+        ] {
+            let mut input = answer.as_bytes();
+            assert_eq!(
+                confirm_with("ok?", false, true, &mut input).unwrap(),
+                want,
+                "{answer:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn models_file_conflicts_with_version() {
+        let argv = [
+            "ngiab-rs",
+            "models",
+            "update",
+            "--file",
+            "x.tar.gz",
+            "--version",
+            "2026.11.23",
+        ];
+        assert!(Cli::try_parse_from(argv).is_err());
     }
 }
