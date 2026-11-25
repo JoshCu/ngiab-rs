@@ -875,6 +875,10 @@ impl App {
     /// The "Install backend…" checkbox list: `kinds` (default: every backend that
     /// is not installed). The selected backend is pre-checked, or the only one.
     fn open_backend_picker(&mut self, kinds: Option<Vec<BackendKind>>) {
+        if self.running() {
+            self.flash("wait for the run to finish");
+            return;
+        }
         let kinds = kinds.unwrap_or_else(|| installer::candidates(&self.detected));
         if kinds.is_empty() {
             self.flash("every backend that works here is already installed");
