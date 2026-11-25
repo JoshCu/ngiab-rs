@@ -29,6 +29,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 fn main() -> ExitCode {
+    // Windows: leftovers of an earlier `self update` (no-op elsewhere).
+    selfupdate::cleanup_stale_binaries();
     let cli = Cli::parse();
     // `self` and `models` must not run `Detected::detect()`: the docker/podman
     // probes can take seconds.
