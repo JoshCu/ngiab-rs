@@ -106,7 +106,7 @@ This plan merges the old `install+ci.md` (installers, cross-platform releases, s
   - `build.rs` emits `NGIAB_TARGET`.
   - Add a `LICENSE` file.
   - `TOOL_VERSIONS` pins `bmi-driver` and `rs_route` for both the Dockerfile and install.sh, installed with `cargo install --version X --locked`.
-  - A local build needs only `cc`, `cmake` and `make`. _(P1 finding: rs_route 0.3.1's build.rs also compiles a Fortran kernel with `gfortran`, so building rs_route needs gfortran; the Dockerfile build stage installs gcc-gfortran. install.sh (B.5) must account for this.)_
+  - A local build needs a C/C++ compiler, **gfortran** (rs_route 0.3.1 compiles a Fortran kernel), **cmake ≥ 3.26** (hdf5-metno-src) and `make`. install.sh installs these, falling back to a pinned Kitware CMake on older distros.
 - **Self-update** uses the `self-replace` crate. On Windows, stale `*.old` files are cleaned up at startup.
 - **TUI plumbing:** one "suspend TUI → run closure → resume" helper in `main.rs`, which also toggles mouse capture. The shell, the installer and the `rfd` dialog all use it.
 - **Eval files:**
@@ -190,7 +190,7 @@ There is no PR-check workflow. It is optional (A.8).
   - `docker build .` still produces a working image: an LSTM realization still runs in it, and `python3` is absent.
 
 ### A.2 Versioning and tagging
-- [ ] **Binary releases.** `Cargo.toml` `version` is the source of truth. To release: _(not done: README "Releasing" section is a later phase; the steps are in the release.yml header and the proposed text is in the CI phase summary)_
+- [x] **Binary releases.** `Cargo.toml` `version` is the source of truth. To release:
   1. Bump the version.
   2. Run `cargo update -p ngiab-rs --offline`.
   3. Commit as `release vX.Y.Z`.
@@ -659,29 +659,29 @@ This is the only place it is implemented. The local section relies on it.
   - A stopped daemon gets the start hint, not an installer prompt.
 
 ### B.8 README
-- [ ] At the very top, under the title:
+- [x] At the very top, under the title:
   ```sh
   # macOS and Linux
   curl -LsSf https://github.com/JoshCu/ngiab-rs/releases/latest/download/install.sh | sh
   # Windows
   powershell -ExecutionPolicy ByPass -c "irm https://github.com/JoshCu/ngiab-rs/releases/latest/download/install.ps1 | iex"
   ```
-- [ ] A backend-by-platform table:
+- [x] A backend-by-platform table:
   - local: Linux x86_64 only, glibc ≥ 2.34, needs Rust plus cc/cmake/make.
   - docker/podman: Linux, macOS and Windows.
 
   Note that Python BMI models and SUMMA are not supported.
-- [ ] Non-interactive examples, the install location and PATH changes, and **uninstall**:
+- [x] Non-interactive examples, the install location and PATH changes, and **uninstall**:
   - Delete the binary.
   - Delete `~/.ngiab/container`, `~/.ngiab/container.bak` and `~/.ngiab/install.json`. **Do not delete the rest of `~/.ngiab`**; it belongs to NGIAB_data_preprocess.
   - Remove the `# ngiab-rs` PATH lines.
-- [ ] Document:
+- [x] Document:
   - `self update`
   - `models update|revert|status`, including that running revert twice re-applies the update
   - `backend list|install`
   - the `run` escape hatch for data folders named like a subcommand
   - the "Releasing" steps (A.2)
-- [ ] Update the usage block (`README.md:8-19`).
+- [x] Update the usage block (`README.md:8-19`).
 
 ### B.9 Ordering
 1. B.1 and B.2 (with `net.rs`).
